@@ -3,6 +3,16 @@
 Turn a supported USB Wi-Fi dongle into an experimental SDR receiver with
 **14-bit I/Q at 40 MSps complex**, with an experimental 80 MSps mode.
 
+> [!IMPORTANT]
+>
+> This is experimental software. The original command interval remains
+> 2156 to 2610 MHz. The generic adapter profile permits wider requests, but
+> its 1800 to 3100 and 4000 to 8000 MHz windows are not guaranteed reception
+> ranges. Gain and sensitivity are uncalibrated. A flat 80 MHz passband has
+> not been established. Read the measured limits before relying on a setting.
+
+## About this fork
+
 This is the [ot0tot/BirriaSDR](https://github.com/ot0tot/BirriaSDR)
 receive fork, on branch `mt7961-wifi-usb`. It adds Windows support for the
 generic MT7961 USB adapter (`0e8d:7961`), wider experimental tuning, an SDR#
@@ -21,15 +31,19 @@ The C11 library and recorder remain available for other applications. See
 the [API](#api) for integration and the [application guide](docs/applications.md)
 for optional SoapySDR support.
 
-> [!IMPORTANT]
->
-> This is experimental software. The original command interval remains
-> 2156 to 2610 MHz. The generic adapter profile permits wider requests, but
-> its 1800 to 3100 and 4000 to 8000 MHz windows are not guaranteed reception
-> ranges. Gain and sensitivity are uncalibrated. A flat 80 MHz passband has
-> not been established. Read the measured limits before relying on a setting.
+### Receiver example
 
-https://github.com/user-attachments/assets/64e9fbbd-1f16-4c7b-905c-5624b9c574b7
+The standalone receiver below is from this fork's completed MT7961 hardware
+test at 2437 MHz and 40 MSps, with the nominal 40 MHz filter and manual gain
+overrides released. It shows real adapter samples. The display is uncalibrated and does not
+establish sensitivity or passband flatness.
+
+![This fork's standalone MT7961 receiver showing a live spectrum and waterfall at 2437 MHz and 40 MSps](docs/images/mt7961-standalone.png)
+
+To reproduce the view, follow [Build and try](#build-and-try), start the
+standalone app and select 2437 MHz, 40 MSps and the 40 MHz filter. Leave
+**Manual gain** unchecked. The [standalone guide](docs/standalone.md) explains
+the display and controls.
 
 ## Background
 
