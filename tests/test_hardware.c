@@ -35,16 +35,19 @@ int main(int argc, char **argv)
     struct birriasdr_stream_stats stats;
     struct observation observation = {0};
     uint32_t received;
+    uint32_t open_flags = 0;
     int result = 0, close_result;
     int16_t *iq;
-    if (argc != 2 || strcmp(argv[1], "--run")) {
-        puts("Pass --run to claim/reset device 0 and capture with original firmware.");
+    if (argc == 3 && !strcmp(argv[2], "--experimental-mt7961"))
+        open_flags = BIRRIASDR_OPEN_EXPERIMENTAL_MT7961;
+    if ((argc != 2 && !(argc == 3 && open_flags)) || strcmp(argv[1], "--run")) {
+        puts("Pass --run [--experimental-mt7961] to claim/reset device 0 and capture with original firmware.");
         return 1;
     }
     iq = malloc((size_t)samples * 4);
     if (!iq)
         return 1;
-    result = birriasdr_open(&dev, 0);
+    result = birriasdr_open_ex(&dev, 0, open_flags);
     if (result < 0)
         goto cleanup;
     for (int manual = 1; manual >= 0; --manual) {

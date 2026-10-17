@@ -185,6 +185,7 @@ static void observe(const int16_t *iq, uint32_t count, uint64_t first, void *con
     observation->samples += count;
     if (observation->callbacks++ == 0) {
         CHECK(birriasdr_close(dev) == BIRRIASDR_ERROR_BUSY);
+        CHECK(birriasdr_set_sample_rate(dev,80000000)==BIRRIASDR_ERROR_BUSY);
         if (model->fault == GAIN_ERROR)
             CHECK(birriasdr_set_tuner_gain_mode(dev, 1) == BIRRIASDR_ERROR_IO);
         else if (model->fault == TUNE_ERROR) {

@@ -49,9 +49,8 @@
  * runs. The final USB trailer is outside the I/Q payload and may contain SRAM
  * data, so its value is deliberately not interpreted as another sample.
  */
-static int consume_frame(struct bs_framer *framer, size_t length)
+static int consume_frame(struct bs_framer *framer, const uint8_t *frame, size_t length)
 {
-    const uint8_t *frame = framer->pending;
     if (length == 40) {
         if (frame[28] != 1 || frame[32] || framer->acknowledgements++)
             return BIRRIASDR_ERROR_PROTOCOL;
@@ -75,6 +74,17 @@ int bs_framer_feed(struct bs_framer *framer, const uint8_t *data, size_t length)
 {
     while (length) {
         size_t target = 4, copy;
+        if (!framer->used && length >= 4) {
+            uint32_t word = bs_get_le32(data), size = word & 0xffff;
+            if (word >> 27 != 7 || (size != 36 && size != BS_FRAME_BYTES - 4))
+                return BIRRIASDR_ERROR_PROTOCOL;
+            if (length >= size + 4u) {
+                BS_TRY(consume_frame(framer, data, size + 4u));
+                data += size + 4u;
+                length -= size + 4u;
+                continue;
+            }
+        }
         if (framer->used >= 4) {
             uint32_t word = bs_get_le32(framer->pending);
             uint32_t size = word & 0xffff;
@@ -90,7 +100,7 @@ int bs_framer_feed(struct bs_framer *framer, const uint8_t *data, size_t length)
         data += copy;
         length -= copy;
         if (framer->used == target && target != 4) {
-            BS_TRY(consume_frame(framer, target));
+            BS_TRY(consume_frame(framer, framer->pending, target));
             framer->used = 0;
         }
     }

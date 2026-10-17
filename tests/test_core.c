@@ -66,6 +66,47 @@ static void test_framing(void)
         CHECK(bs_framer_feed(&f, frame, sizeof(frame) - 1) == 0);
         CHECK(bs_framer_finish(&f, 1) == BIRRIASDR_ERROR_PROTOCOL);
     }
+    /* Larger USB aggregates cross the old 64 KiB boundary. Transport chunks
+     * may also split an event across the new 128 KiB boundary. */
+    {
+        const size_t total = 32u * BS_FRAME_BYTES;
+        const size_t chunks[] = {15u * BS_FRAME_BYTES, 131072u, 65537u};
+        uint8_t *batch = malloc(total);
+        CHECK(batch);
+        for (unsigned n = 0; n < 32; ++n)
+            make_frame(batch + n * BS_FRAME_BYTES, n);
+        for (unsigned n = 0; n < sizeof(chunks) / sizeof(chunks[0]); ++n) {
+            unsigned count = 0;
+            struct bs_framer f = {.nonce = 0x12345678, .payload = payload, .context = &count};
+            for (size_t offset = 0; offset < total;) {
+                size_t length = total - offset;
+                if (length > chunks[n]) length = chunks[n];
+                CHECK(bs_framer_feed(&f, batch + offset, length) == 0);
+                offset += length;
+            }
+            CHECK(bs_framer_finish(&f, 32) == 0 && count == 32);
+        }
+        free(batch);
+    }
+}
+
+/* Board opt-in is explicit and cannot enable an unrelated backend. */
+static void test_board_flags(void)
+{
+    birriasdr_dev_t *invalid = (birriasdr_dev_t *)(uintptr_t)1;
+    const struct bs_usb_id *generic = bs_lookup_id(0x0e8d, 0x7961);
+    CHECK(generic && !generic->qualified);
+    CHECK(!bs_board_allowed(generic, 0));
+    CHECK(bs_board_allowed(generic, BIRRIASDR_OPEN_EXPERIMENTAL_MT7961));
+    CHECK(!bs_board_allowed(bs_lookup_id(0x0e8d, 0x7925), BIRRIASDR_OPEN_EXPERIMENTAL_MT7961));
+    CHECK(!bs_board_allowed(NULL, BIRRIASDR_OPEN_EXPERIMENTAL_MT7961));
+    CHECK(bs_board_allowed(bs_lookup_id(0x3574, 0x6211), 0));
+    CHECK(!bs_board_allowed(bs_lookup_id(0x3574, 0x6211), BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS));
+    CHECK(!bs_board_allowed(generic, BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS));
+    CHECK(bs_board_allowed(generic, BIRRIASDR_OPEN_EXPERIMENTAL_MT7961|BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS));
+    CHECK(birriasdr_open_ex(&invalid, 0, UINT32_MAX) == BIRRIASDR_ERROR_INVALID);
+    CHECK(invalid == NULL);
+    CHECK(birriasdr_open_ex(NULL, 0, 0) == BIRRIASDR_ERROR_INVALID);
 }
 
 /* Known signed extrema catch I/Q reversal, sign-extension and accidental scaling. */
@@ -153,7 +194,9 @@ static void test_api(void)
     CHECK(id->backend->prepare(&dev, 0) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_set_tuner_gain(&dev, 100) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_set_agc_mode(&dev, 1) == BIRRIASDR_ERROR_UNSUPPORTED);
-    CHECK(birriasdr_set_tuner_bandwidth(&dev, 40000000) == BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_set_tuner_bandwidth(&dev, 40000000) == 0);
+    CHECK(birriasdr_get_tuner_bandwidth(&dev) == 40000000);
+    CHECK(birriasdr_set_tuner_bandwidth(&dev, 80000000) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_set_center_freq(&dev, UINT64_C(5180000000)) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_get_tuning_range(&dev, &minimum, &maximum) == 0);
     CHECK(birriasdr_get_capabilities(&dev) & BIRRIASDR_CAP_TUNING);
@@ -168,6 +211,18 @@ static void test_api(void)
     CHECK(birriasdr_set_sample_rate(&dev, 0) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_set_sample_rate(&dev, 80000000) == BIRRIASDR_ERROR_UNSUPPORTED);
     CHECK(birriasdr_get_sample_rate(&dev) == 40000000);
+    dev.open_flags=BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS;
+    CHECK(birriasdr_get_capabilities(&dev)&BIRRIASDR_CAP_FILTER);
+    CHECK(birriasdr_set_sample_rate(&dev,80000000)==0);
+    CHECK(birriasdr_get_sample_rate(&dev)==80000000);
+    CHECK(birriasdr_set_tuner_bandwidth(&dev,80000000)==0);
+    CHECK(birriasdr_get_tuner_bandwidth(&dev)==80000000);
+    CHECK(birriasdr_set_sample_rate(&dev,40000000)==BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_set_tuner_bandwidth(&dev,20000000)==BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_get_tuner_bandwidth(&dev)==80000000);
+    CHECK(birriasdr_set_tuner_bandwidth(&dev,40000000)==0);
+    CHECK(birriasdr_set_sample_rate(&dev,160000000)==BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(birriasdr_set_sample_rate(&dev,40000000)==0);
     CHECK(birriasdr_set_gain_codes(&dev, &gain) == BIRRIASDR_ERROR_STATE);
     CHECK(birriasdr_set_tuner_gain_mode(&dev, 1) == 0);
     CHECK(birriasdr_set_gain_codes(&dev, &gain) == 0);
@@ -181,6 +236,7 @@ static void test_api(void)
     CHECK(birriasdr_cancel_async(&dev) == 0);
     CHECK(birriasdr_set_tuner_gain_mode(&dev, 0) == BIRRIASDR_ERROR_BUSY);
     CHECK(birriasdr_set_center_freq(&dev, minimum) == BIRRIASDR_ERROR_BUSY);
+    CHECK(birriasdr_set_tuner_bandwidth(&dev,40000000)==BIRRIASDR_ERROR_BUSY);
     CHECK(birriasdr_close(&dev) == BIRRIASDR_ERROR_BUSY);
     CHECK(pthread_mutex_destroy(&dev.control_mutex) == 0);
 }
@@ -189,6 +245,7 @@ static void test_api(void)
 int main(void)
 {
     test_framing();
+    test_board_flags();
     test_samples();
     test_events();
     test_all_sample_values();

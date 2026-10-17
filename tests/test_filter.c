@@ -118,6 +118,17 @@ int main(void)
     initialize(&model, &dev);
     dev.rate = 20000000;
     CHECK(mt_configure_filter(&dev) == BIRRIASDR_ERROR_UNSUPPORTED && !model.operations);
+    initialize(&model, &dev);
+    dev.bandwidth=80000000;
+    CHECK(mt_configure_filter(&dev)==BIRRIASDR_ERROR_UNSUPPORTED && !model.operations);
+    dev.rate=80000000;
+    CHECK(mt_configure_filter(&dev)==BIRRIASDR_ERROR_UNSUPPORTED && !model.operations);
+    dev.open_flags=BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS;
+    CHECK(mt_configure_filter(&dev)==0);
+    CHECK(model.value[0]==0xaa123456 && model.value[1]==0x97654321);
+    CHECK(model.value[2]==0xa2abcdef && model.value[3]==0xd2765432);
+    CHECK(mt_restore_filter(&dev)==0);
+    CHECK(!memcmp(model.value,baseline,sizeof(baseline)));
     puts("Filter configuration, preservation, rollback and readback tests passed");
     return 0;
 }

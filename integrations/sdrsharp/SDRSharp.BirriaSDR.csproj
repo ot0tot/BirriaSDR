@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>SDRSharp.BirriaSDR</AssemblyName>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SmokeTest" />
+    <Compile Include="BirriaIO.cs" />
+    <Compile Include="BirriaPlugin.cs" />
+    <Compile Include="IqConverter.cs" />
+    <Reference Include="SDRSharp.Radio"><HintPath>$(SdrSharpSdk)/SDRSharp.Radio.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SDRSharp.Common"><HintPath>$(SdrSharpSdk)/SDRSharp.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SDRSharp.PanView"><HintPath>$(SdrSharpSdk)/SDRSharp.PanView.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <Target Name="RequireSdk" BeforeTargets="ResolveReferences" Condition="!Exists('$(SdrSharpSdk)/SDRSharp.Radio.dll')">
+    <Error Text="Set -p:SdrSharpSdk to the SDR# SDK reference assembly directory." />
+  </Target>
+</Project>

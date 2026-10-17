@@ -18,6 +18,26 @@ extern "C" {
 /** Opaque receiver. Each handle owns its USB context and one Wi-Fi interface. */
 typedef struct birriasdr_dev birriasdr_dev_t;
 
+enum birriasdr_open_flag {
+    /** Opt into the unqualified 0e8d:7961 board using the MT7961/MT7972 profile.
+     * Digital/analog identities and all transport checks are still required.
+     * This flag makes no RF calibration or board qualification claim.
+     */
+    BIRRIASDR_OPEN_EXPERIMENTAL_MT7961 = 1u << 0,
+    /* MT7961 only: exploratory low/high synthesizer coordinates. These
+     * programming windows do not assert usable reception throughout them. */
+    BIRRIASDR_OPEN_EXPERIMENTAL_TUNING = 1u << 1,
+    /** Enable optional 80 MSps capture on 0e8d:7961 with the board opt-in.
+     * The filter defaults to 40 MHz. Wider filtering is a separate control. */
+    BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS = 1u << 2
+};
+
+/** Open with explicit board flags. Zero flags is identical to birriasdr_open.
+ * Unknown flags are invalid. Discovery continues to report an unqualified
+ * board with capabilities=0 even when this opt-in is used for opening it.
+ */
+int birriasdr_open_ex(birriasdr_dev_t **dev, uint32_t index, uint32_t flags);
+
 enum birriasdr_error {
     BIRRIASDR_OK = 0,
     BIRRIASDR_ERROR_INVALID = -1,
@@ -167,13 +187,22 @@ uint32_t birriasdr_get_capabilities(const birriasdr_dev_t *dev);
 
 /** Return inclusive command limits in Hz. Returns UNSUPPORTED if unknown.
  * These are programming limits, not guaranteed RF sensitivity or passband
- * coverage. Safe during a read.
+ * coverage. The experimental tuning profile returns an envelope containing
+ * a gap. Use get_tuning_ranges to discover its separate windows. Safe during a read.
  */
 int birriasdr_get_tuning_range(const birriasdr_dev_t *dev, uint64_t *minimum_hz,
                               uint64_t *maximum_hz);
 
+struct birriasdr_tuning_range { uint64_t minimum_hz, maximum_hz; };
+/** Return the number of disjoint command windows, or a negative error.
+ * Pass NULL with capacity zero to query the count. A non-NULL array must
+ * have capacity for all windows. The legacy getter returns their envelope,
+ * which may include an unsupported gap. Safe during a read. */
+int birriasdr_get_tuning_ranges(const birriasdr_dev_t *dev,
+    struct birriasdr_tuning_range *ranges, uint32_t capacity);
+
 /** Set a requested center in Hz, without channel-number rounding or host mixing.
- * The MT7921 range is 2156000000..2610000000 Hz, inclusive, with nominal
+ * The default MT7921 range is 2156000000..2610000000 Hz, inclusive, with nominal
  * 28.6102294921875 Hz hardware steps; frequency accuracy is uncalibrated.
  * While idle, stage the center for the next read. With CAP_LIVE_TUNING, apply it
  * during capture without restarting ICAP/DMA or downloading firmware. Calls
@@ -185,6 +214,12 @@ int birriasdr_get_tuning_range(const birriasdr_dev_t *dev, uint64_t *minimum_hz,
  * reported. A failed hardware retune attempts rollback and stops the acquisition;
  * enabled recovery can then restart with the preceding committed frequency.
  * An out-of-range request returns UNSUPPORTED without disrupting a live stream.
+ * OPEN_EXPERIMENTAL_TUNING permits MT7961 low/high synthesizer research at
+ * 1800000000..3100000000 and 4000000000..8000000000 Hz. These are exploration
+ * bounds, not measured RF coverage. The high plan uses a nominal 50 MHz
+ * reference coordinate with 47.6837 Hz steps. This mode checks completion and
+ * readback but does not reject the unqualified 0xd74 diagnostic rail, because
+ * received external tones contradicted that proposed tuning-limit test.
  */
 int birriasdr_set_center_freq(birriasdr_dev_t *dev, uint64_t frequency_hz);
 
@@ -193,9 +228,10 @@ int birriasdr_set_center_freq(birriasdr_dev_t *dev, uint64_t frequency_hz);
  */
 uint64_t birriasdr_get_center_freq(const birriasdr_dev_t *dev);
 
-/** Stage complex samples/second. MT7921 accepts 40000000 only at present.
- * The sampled span is 40 MHz, using matched nominal 40 MHz analog/digital
- * settings. This is not a calibrated passband or an alias-rejection guarantee.
+/** Stage complex samples/second while idle. Default is 40000000.
+ * Optional 80000000 requires OPEN_EXPERIMENTAL_80MSPS and the MT7961 board
+ * opt-in. The filter defaults to 40 MHz and has a separate idle-only setter.
+ * Sample rate does not specify a calibrated passband or alias rejection.
  */
 int birriasdr_set_sample_rate(birriasdr_dev_t *dev, uint32_t samples_per_second);
 
@@ -241,11 +277,15 @@ int birriasdr_get_tuner_gains(birriasdr_dev_t *dev, int *gains, size_t capacity)
  */
 int birriasdr_set_agc_mode(birriasdr_dev_t *dev, int enabled);
 
-/** Reserved: independently selectable RF filter bandwidth in Hz. The backend
- * applies its fixed nominal 40 MHz profile automatically. This setter remains
- * UNSUPPORTED until additional widths and their RF response are qualified.
+/** Select a nominal 40 or experimental 80 MHz receive filter while idle.
+ * The wider filter requires the MT7961 80 MSps opt-in and an 80 MSps rate.
+ * Set the filter back to 40 MHz before reducing the sample rate. These are
+ * filter profiles, not calibrated flat-passband or anti-alias guarantees.
  */
 int birriasdr_set_tuner_bandwidth(birriasdr_dev_t *dev, uint32_t bandwidth_hz);
+
+/** Return the selected nominal filter bandwidth, or zero for a null handle. */
+uint32_t birriasdr_get_tuner_bandwidth(const birriasdr_dev_t *dev);
 
 /** Reserved: oscillator correction in ppm. UNSUPPORTED; no software DDC added. */
 int birriasdr_set_freq_correction(birriasdr_dev_t *dev, int ppm);
@@ -287,6 +327,7 @@ int birriasdr_read_sync(birriasdr_dev_t *dev, int16_t *iq, uint32_t count,
 /** Stream until cancel_async, device loss, or an unrecovered hardware/protocol error.
  * Like librtlsdr, this blocks the calling thread while asynchronous USB reads
  * run. transfer_count=0 selects 64 queued transfers (allowed 4..256).
+ * Transfer sizes are 64 KiB at 40 MSps and 256 KiB at 80 MSps.
  * buffer_samples=0 selects 16384; otherwise use a multiple of 2048, <=262144.
  * A final callback may be shorter. Cancellation drains submitted device
  * packets before returning; callbacks can still arrive after cancellation.

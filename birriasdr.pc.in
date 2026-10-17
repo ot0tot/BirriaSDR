@@ -7,6 +7,6 @@ Name: birriasdr
 Description: Userland Wi-Fi I/Q receiver with original device firmware
 Version: @PROJECT_VERSION@
 Libs: -L${libdir} -lbirriasdr
-Libs.private: -lpthread
+Libs.private: @BIRRIA_PRIVATE_LIBS@
 Requires.private: libusb-1.0
 Cflags: -I${includedir}

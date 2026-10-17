@@ -3,7 +3,7 @@
  */
 
 /*
- * MT7961/MT7972 matched receive bandwidth at 40 MSps
+ * MT7961/MT7972 matched receive bandwidth
  *
  * The analog filter and the digital PHY bandwidth are independent controls.
  * RF 0x160[31:30] selects the analog profile in each physical SPI bank;
@@ -22,9 +22,9 @@
  * This is a nominal channel profile, not a brick-wall anti-alias filter. The
  * receive-only Wi-Fi comparison measured roughly 19-20 dB suppression at
  * +/-30 MHz and still decoded some aliased headers from strong signals there.
- * The wider analog codes admit more out-of-span energy and are research-only.
- * Calibrated passband, stopband guarantees and arbitrary filter widths remain
- * unsupported; see docs/mt7921.md for the configuration and its limitations.
+ * An explicit experimental 80 MHz profile selects code 2 in both fields and
+ * requires 80 MSps. The rate alone keeps code 1. These profiles do not establish
+ * a flat passband or stopband guarantee; see docs/bandwidth-validation.md.
  *
  * Save all four baseline fields before the first write. Preserve unrelated
  * bits, verify each application, and restore every field on partial failure.
@@ -80,13 +80,16 @@ int mt_restore_filter(birriasdr_dev_t *dev)
     return first_error;
 }
 
-/* Apply the fixed profile once per preparation; this is not a live control.
+/* Apply the selected profile once per preparation; this is not a live control.
  * The prepare owner handles any remaining cleanup and whole-startup retry.
  */
 int mt_configure_filter(birriasdr_dev_t *dev)
 {
     uint32_t before[4];
-    if (dev->rate != 40000000)
+    unsigned code=dev->bandwidth==80000000 ? 2u : 1u;
+    if (dev->rate != 40000000 && !(dev->rate==80000000 && (dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS)))
+        return BIRRIASDR_ERROR_UNSUPPORTED;
+    if (code==2 && (dev->rate!=80000000 || !(dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS)))
         return BIRRIASDR_ERROR_UNSUPPORTED;
     if (dev->mt7921.filter_saved)
         return BIRRIASDR_ERROR_STATE;
@@ -95,7 +98,7 @@ int mt_configure_filter(birriasdr_dev_t *dev)
     memcpy(dev->mt7921.filter_baseline, before, sizeof(before));
     dev->mt7921.filter_saved = true;
     for (unsigned i = 0; i < 4; ++i) {
-        int result = filter_write(dev, i, i < 2 ? UINT32_C(0x40000000) : UINT32_C(0x01000000));
+        int result = filter_write(dev, i, code << (i < 2 ? 30 : 24));
         if (result < 0)
             return mt_restore_filter(dev) < 0 ? BIRRIASDR_ERROR_STATE : result;
     }

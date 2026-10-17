@@ -90,28 +90,59 @@ int main(int argc, char **argv)
     struct birriasdr_stream_stats stats;
     struct recorder recorder = {0};
     uint64_t frequency = 0;
+    uint32_t device_index = 0, open_flags = 0;
+    uint32_t rate=40000000, bandwidth=40000000;
     int result, close_result, argument = 1;
-    if (argc == 2 && !strcmp(argv[1], "--list"))
-        return list_devices();
-    if (argc > 1 && !strcmp(argv[1], "--frequency")) {
-        if (argc < 4 || parse_number(argv[2], &frequency))
+    while (argument < argc && argv[argument][0] == '-') {
+        const char *option = argv[argument++];
+        uint64_t index = 0;
+        if (!strcmp(option, "--experimental-mt7961")) {
+            open_flags |= BIRRIASDR_OPEN_EXPERIMENTAL_MT7961;
+        } else if (!strcmp(option,"--experimental-tuning")) {
+            open_flags |= BIRRIASDR_OPEN_EXPERIMENTAL_TUNING;
+        } else if (!strcmp(option, "--list") && argument == argc) {
+            return list_devices();
+        } else if (!strcmp(option, "--frequency") && argument < argc) {
+            if (parse_number(argv[argument++], &frequency)) return 1;
+        } else if (!strcmp(option,"--rate") && argument<argc) {
+            uint64_t value;
+            if (parse_number(argv[argument++],&value) || (value!=40000000 && value!=80000000)) return 1;
+            rate=(uint32_t)value;
+            if (rate==80000000) open_flags|=BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS;
+        } else if (!strcmp(option,"--bandwidth") && argument<argc) {
+            uint64_t value;
+            if(parse_number(argv[argument++],&value) || (value!=40000000 && value!=80000000)) return 1;
+            bandwidth=(uint32_t)value;
+        } else if (!strcmp(option, "--device") && argument < argc) {
+            if (strcmp(argv[argument], "0") && parse_number(argv[argument], &index)) return 1;
+            if (index > UINT32_MAX) return 1;
+            device_index = (uint32_t)index;
+            ++argument;
+        } else {
+            fprintf(stderr, "Unknown or incomplete option: %s\n", option);
             return 1;
-        argument = 3;
+        }
     }
     if (argc - argument < 1 || argc - argument > 3) {
-        fprintf(stderr, "Usage: %s --list | [--frequency Hz] output.cs16 [complex-samples [manual]]\n", argv[0]);
+        fprintf(stderr, "Usage: %s --list | [--experimental-mt7961] [--experimental-tuning] [--device index] [--frequency Hz] [--rate 40000000|80000000] [--bandwidth 40000000|80000000] output.cs16 [complex-samples [manual]]\n", argv[0]);
         return 1;
     }
     if (argc - argument >= 2 && parse_number(argv[argument + 1], &recorder.limit))
         return 1;
     if (argc - argument == 3 && strcmp(argv[argument + 2], "manual"))
         return 1;
-    result = birriasdr_open(&dev, 0);
+    if (open_flags)
+        fprintf(stderr, "Experimental 0e8d:7961 board profile enabled; RF behavior is unqualified.\n");
+    result = birriasdr_open_ex(&dev, device_index, open_flags);
     if (result < 0) {
         fprintf(stderr, "Open: %s\n", birriasdr_strerror(result));
         return 1;
     }
     recorder.dev = dev;
+    result=birriasdr_set_sample_rate(dev,rate);
+    if (result<0) { fprintf(stderr,"Rate: %s\n",birriasdr_strerror(result));birriasdr_close(dev);return 1; }
+    result=birriasdr_set_tuner_bandwidth(dev,bandwidth);
+    if(result<0) { fprintf(stderr,"Bandwidth: %s\n",birriasdr_strerror(result));birriasdr_close(dev);return 1; }
     if (frequency) {
         result = birriasdr_set_center_freq(dev, frequency);
         if (result < 0) {

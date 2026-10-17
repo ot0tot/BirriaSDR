@@ -293,7 +293,12 @@ static int select_receive_path(birriasdr_dev_t *dev)
 int mt_configure_rf(birriasdr_dev_t *dev)
 {
     uint32_t analog, crystal;
-    if (dev->frequency < MT_RF_MIN_HZ || dev->frequency > MT_RF_MAX_HZ || dev->rate != 40000000)
+    if (dev->rate==80000000 && !(dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS))
+        return BIRRIASDR_ERROR_UNSUPPORTED;
+    if (dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_TUNING) {
+        BS_TRY(dev->backend->validate(dev->frequency,dev->rate,&dev->gain));
+    } else if (dev->frequency < MT_RF_MIN_HZ || dev->frequency > MT_RF_MAX_HZ ||
+        (dev->rate != 40000000 && dev->rate != 80000000))
         return BIRRIASDR_ERROR_UNSUPPORTED;
     BS_TRY(mt_rf_read(dev, MT_TOP_PORT, 0x2c, &analog));
     BS_TRY(bs_read32(dev, BS_MMIO, 0x02004600, &crystal));

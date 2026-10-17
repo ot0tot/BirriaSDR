@@ -4,6 +4,12 @@
 #include "internal.h"
 #include <errno.h>
 #include <time.h>
+#ifdef _WIN32
+#include <bcrypt.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 /* Explicit byte assembly keeps protocol access safe on unaligned/big-endian hosts. */
 uint32_t bs_get_le32(const uint8_t *p)
@@ -28,16 +34,51 @@ void bs_put_le16(uint8_t *p, uint16_t value)
 /* Hardware deadlines use a monotonic clock so wall-clock adjustments are harmless. */
 uint64_t bs_now_ns(void)
 {
+#ifdef _WIN32
+    LARGE_INTEGER ticks, frequency;
+    QueryPerformanceCounter(&ticks);
+    QueryPerformanceFrequency(&frequency);
+    return (uint64_t)(ticks.QuadPart / frequency.QuadPart) * UINT64_C(1000000000)
+        + (uint64_t)(ticks.QuadPart % frequency.QuadPart) * UINT64_C(1000000000)
+          / (uint64_t)frequency.QuadPart;
+#else
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
+#endif
 }
 
 /* Preserve settling delays when a process receives a signal. */
 void bs_sleep_us(unsigned us)
 {
+#ifdef _WIN32
+    LARGE_INTEGER due;
+    HANDLE timer = CreateWaitableTimerW(NULL, FALSE, NULL);
+    due.QuadPart = -(LONGLONG)(us ? us : 1) * 10;
+    if (!timer || !SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE) ||
+        WaitForSingleObject(timer, INFINITE) != WAIT_OBJECT_0)
+        Sleep((us + 999u) / 1000u);
+    if (timer) CloseHandle(timer);
+#else
     struct timespec t = {(time_t)(us / 1000000u), (long)(us % 1000000u) * 1000};
     while (nanosleep(&t, &t) < 0 && errno == EINTR) {}
+#endif
+}
+
+/* Fresh nonces use the host OS random source on both platforms. */
+int bs_random32(uint32_t *value)
+{
+#ifdef _WIN32
+    return BCryptGenRandom(NULL, (PUCHAR)value, sizeof(*value),
+                           BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0 ? 0 : BIRRIASDR_ERROR_IO;
+#else
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    ssize_t count;
+    if (fd < 0) return BIRRIASDR_ERROR_IO;
+    do { count = read(fd, value, sizeof(*value)); } while (count < 0 && errno == EINTR);
+    close(fd);
+    return count == sizeof(*value) ? 0 : BIRRIASDR_ERROR_IO;
+#endif
 }
 
 /* Dispatch one register read through the selected transport/test harness. */

@@ -45,6 +45,8 @@
  */
 #include "mt7921.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 static const uint32_t gain_addresses[] = {0x830000c4, 0x83000108, 0x83000150, 0x768};
 static const uint32_t gain_masks[] = {0xf7f7f707, 0x3f3f0000, 0x8070f000, 0xff800000};
@@ -73,6 +75,9 @@ static int gain_write(birriasdr_dev_t *dev, unsigned field, uint32_t value)
         BS_TRY(bs_update32(dev, BS_MMIO, address, mask, value & mask));
         BS_TRY(bs_read32(dev, BS_MMIO, address, &actual));
     }
+    if (((actual ^ value) & mask) && getenv("BIRRIASDR_TRACE_USB"))
+        fprintf(stderr, "Gain readback mismatch: field=%u expected=%08x actual=%08x mask=%08x\n",
+                field, value, actual, mask);
     return ((actual ^ value) & mask) ? BIRRIASDR_ERROR_STATE : 0;
 }
 
@@ -127,8 +132,12 @@ int mt_apply_gain(birriasdr_dev_t *dev)
     BS_TRY(gain_snapshot(dev, before));
     BS_TRY(bs_read32(dev, BS_MMIO, 0x830000d0, &coarse));
     if ((before[0] & 7) || (before[2] & 0x80000000) ||
-        (before[3] & 0x80000000) || (coarse & (1u << 27)))
+        (before[3] & 0x80000000) || (coarse & (1u << 27))) {
+        if (getenv("BIRRIASDR_TRACE_USB"))
+            fprintf(stderr, "Pre-existing gain force: phy=%08x,%08x,%08x rf=%08x coarse=%08x\n",
+                    before[0], before[1], before[2], before[3], coarse);
         return BIRRIASDR_ERROR_STATE;
+    }
     memcpy(dev->mt7921.gain_baseline, before, sizeof(before));
     dev->mt7921.gain_saved = true;
     return dev->manual ? gain_transaction(dev, before, values, true) : 0;

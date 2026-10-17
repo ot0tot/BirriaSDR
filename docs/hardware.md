@@ -19,6 +19,13 @@ nominal 40 MHz analog filter with the corresponding digital bandwidth class at
 out-of-span rejection. Sample packing, memory layout and register sequences all
 belong to the chipset backend.
 
+The experimental USB `0e8d:7961` profile also offers an idle-only 80 MSps
+capture rate with a default nominal 40 MHz filter. A separate experimental
+80 MHz filter setting is described in the [bandwidth validation](bandwidth-validation.md).
+The host queues more reads
+and uses a bounded buffer pool. The [streaming reference](usb-streaming.md)
+describes the measurements and remaining host-dependent limits.
+
 The device never receives vendor RAM firmware or a ROM patch. The current
 backend relies only on the device's immutable factory ROM and our original
 program. All configuration is volatile, and nothing is written to flash or

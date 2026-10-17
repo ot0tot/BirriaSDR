@@ -299,9 +299,8 @@ int bs_stream(birriasdr_dev_t *dev, birriasdr_read_async_cb_t callback,
     int result = BIRRIASDR_ERROR_NO_MEMORY;
     if (!dev || !callback)
         return BIRRIASDR_ERROR_INVALID;
-    if (!depth) depth = 64;
     if (!buffer_samples) buffer_samples = 16384;
-    if (depth < 4 || depth > 256 || buffer_samples > 262144 || buffer_samples % BS_PACKET_SAMPLES)
+    if ((depth && (depth < 4 || depth > 256)) || buffer_samples > 262144 || buffer_samples % BS_PACKET_SAMPLES)
         return BIRRIASDR_ERROR_INVALID;
     pthread_mutex_lock(&dev->control_mutex);
     if (!atomic_compare_exchange_strong(&dev->run_state, &idle, BS_RUNNING)) {
@@ -309,6 +308,7 @@ int bs_stream(birriasdr_dev_t *dev, birriasdr_read_async_cb_t callback,
         return BIRRIASDR_ERROR_BUSY;
     }
     dev->control_ready = false;
+    if (!depth) depth = 64;
     pthread_mutex_unlock(&dev->control_mutex);
     memset(&dev->stats, 0, sizeof(dev->stats));
     delivery = (struct delivery){.dev = dev, .callback = callback, .context = context,

@@ -9,6 +9,7 @@ and the [MT7921 device reference](mt7921.md).
 | `src/device.c` | Validation of API calls, requested settings, and synchronous and asynchronous entry points |
 | `src/usb.c` | Descriptor discovery, board qualification, ownership and the libusb register transport |
 | `src/io.c` | Endian helpers, monotonic deadlines and bounded register polling |
+| `src/platform.h` | Native Windows synchronization or the existing POSIX thread API |
 | `src/usb_stream.c` | Queued libusb transfers, the bounded host queue, cancellation and draining |
 | `src/stream.c` | Acquisition lifecycle, callback batching, terminal checks and cleanup |
 | `src/chips/mt7921_boot.c` | Original firmware download, ROM command framing and WFSYS reset |
@@ -21,6 +22,9 @@ and the [MT7921 device reference](mt7921.md).
 | `src/chips/mt7925.c` | Explicitly unimplemented backend with no register writes |
 | `firmware/iq_stream.S` | Complete original device program and its constants |
 | `tools/rebuild_firmware.py` | Optional rebuild and verification of the header from the assembly |
+| `integrations/sdrsharp/` | Native source plugin for x64 .NET 8 SDR# with a bounded I/Q queue |
+| `integrations/soapy/` | Optional SoapySDR module with float and integer receive streams |
+| `integrations/standalone/` | Local browser spectrum receiver with a bounded FFT mailbox and native USB controls |
 
 The common reader consumes the event and mailbox protocol of our original
 firmware. Another backend can implement the same protocol on its own hardware.
@@ -86,6 +90,13 @@ wait for the read to return, join any control threads and then close. The
 readback acknowledgment of a live control does not identify which
 already-buffered I/Q sample it affected.
 
+The USB completion callback transfers ownership of a preallocated buffer to
+the queue and submits a spare. The consumer copies after releasing the queue
+lock and returns that buffer afterward. The pool includes one extra consumer
+buffer, so no submitted read aliases a queued or actively copied buffer.
+The event parser consumes complete frames directly and assembles only
+fragmented frames. Its nonce, length, sequence and raw14 checks remain strict.
+
 The `BS_TRY` macro is a small early-return helper for straight-line register
 procedures. Functions that own resources use a single cleanup path instead.
 Calibration, gain and filter restoration attempt every required cleanup write
@@ -129,8 +140,12 @@ must match, in order. The fixture covers the original bootstrap but not the
 later matched-filter setup. A separate four-register model checks that setup's
 analog and digital masks, preservation of unrelated bits, readback, failure at
 every I/O boundary and retry after a failed rollback. The current offline suite
-contains ten CTest cases. Additional fault tests cover standby readback failure,
-a wrong die, gain rollback and repeated gain restoration. The live-control tests
+contains twelve CTest cases. The USB discovery fixture covers composite Wi-Fi
+interface selection, unqualified board opt-in and partial claim cleanup without
+physical device access. The Windows reader fixture checks raw mode ownership,
+unsupported raw mode and failure to enable it before any transfer is submitted.
+Additional fault tests cover standby readback failure, a wrong die, gain rollback
+and repeated gain restoration. The live-control tests
 exercise concurrent setters, coherent settings readback, startup gates and
 failure-triggered cancellation. The gain register model also checks
 manual-to-manual rollback and repeated release and force cycles against the

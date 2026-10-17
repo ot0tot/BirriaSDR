@@ -6,7 +6,7 @@
 
 #include "birriasdr.h"
 #include <libusb.h>
-#include <pthread.h>
+#include "platform.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 
@@ -56,7 +56,12 @@ struct birriasdr_dev {
     libusb_context *usb;
     libusb_device_handle *handle;
     int interface_number;
+    bool interface_claimed;
     int lock_fd;
+#ifdef _WIN32
+    HANDLE device_lock;
+#endif
+    uint32_t open_flags;
     uint8_t ep_in, ep_command, ep_download;
     const struct bs_backend *backend;
     struct bs_io io;
@@ -72,7 +77,8 @@ struct birriasdr_dev {
     void *recovery_context;
     uint32_t recovery_limit;
     atomic_uint_fast64_t frequency;
-    uint32_t rate;
+    atomic_uint rate;
+    atomic_uint bandwidth;
     bool manual;
     struct birriasdr_gain gain;
     uint32_t nonce;
@@ -85,8 +91,17 @@ struct birriasdr_dev {
         bool gain_saved;
         uint32_t filter_baseline[4];
         bool filter_saved;
+        uint32_t band_baseline[4];
+        bool band_saved;
+        uint32_t rate_baseline[2];
+        bool rate_saved;
     } mt7921;
     struct birriasdr_stream_stats stats;
+    struct {
+        uint64_t completions, bytes, last_ns, max_gap_ns;
+        unsigned min_length, max_length, queue_peak;
+    } usb_diagnostics;
+    uint32_t capture_diagnostics[8];
 };
 
 typedef int (*bs_payload_fn)(void *context, const uint8_t *payload);
@@ -101,6 +116,7 @@ struct bs_framer {
 };
 
 extern const struct bs_backend bs_mt7921_backend;
+extern const struct bs_backend bs_mt7961_wide_backend;
 extern const struct bs_backend bs_mt7925_backend;
 const struct bs_usb_id *bs_lookup_id(uint16_t vid, uint16_t pid);
 int bs_usb_discover(uint32_t index, struct birriasdr_device_info *info,
@@ -120,6 +136,8 @@ int bs_poll32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
               uint32_t mask, uint32_t expected, unsigned timeout_ms);
 uint64_t bs_now_ns(void);
 void bs_sleep_us(unsigned microseconds);
+int bs_random32(uint32_t *value);
+bool bs_board_allowed(const struct bs_usb_id *id, uint32_t flags);
 uint32_t bs_get_le32(const uint8_t *bytes);
 void bs_put_le32(uint8_t *bytes, uint32_t value);
 void bs_put_le16(uint8_t *bytes, uint16_t value);

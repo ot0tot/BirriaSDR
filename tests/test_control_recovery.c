@@ -140,13 +140,16 @@ static int trial(birriasdr_dev_t *dev, bool tune, unsigned injections)
 int main(int argc, char **argv)
 {
     birriasdr_dev_t *dev = NULL;
+    uint32_t open_flags = 0;
     struct birriasdr_gain gain = {2, 8, 0};
-    if (argc != 2 || strcmp(argv[1], "--run")) {
-        fprintf(stderr, "Usage: %s --run (injects control failures on a physical dongle)\n", argv[0]);
+    if (argc == 3 && !strcmp(argv[2], "--experimental-mt7961"))
+        open_flags = BIRRIASDR_OPEN_EXPERIMENTAL_MT7961;
+    if ((argc != 2 && !(argc == 3 && open_flags)) || strcmp(argv[1], "--run")) {
+        fprintf(stderr, "Usage: %s --run [--experimental-mt7961] (injects control failures on a physical dongle)\n", argv[0]);
         return 2;
     }
-    setvbuf(stdout, NULL, _IOLBF, 0);
-    int result = birriasdr_open(&dev, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    int result = birriasdr_open_ex(&dev, 0, open_flags);
     if (!result) result = birriasdr_set_tuner_gain_mode(dev, 1);
     if (!result) result = birriasdr_set_gain_codes(dev, &gain);
     for (unsigned i = 0; i < 4 && !result; ++i)

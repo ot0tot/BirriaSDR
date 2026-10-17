@@ -12,10 +12,26 @@ struct request { struct libusb_transfer *transfer; bool cancelled; };
 static struct {
     pthread_mutex_t mutex;
     struct request pending[256];
-    unsigned count, allocated, freed, submitted, fail_submit, completions, limit;
+    unsigned count, allocated, freed, submitted, fail_submit, completions, limit, length;
     unsigned allocations, fail_allocation;
     enum libusb_transfer_status status;
 } mock = {.mutex = PTHREAD_MUTEX_INITIALIZER};
+
+#ifdef _WIN32
+static bool raw_io;
+static int raw_support = 1, raw_error;
+int LIBUSB_CALL libusb_endpoint_supports_raw_io(libusb_device_handle *dev, uint8_t ep)
+{ (void)dev; (void)ep; return raw_support; }
+int LIBUSB_CALL libusb_endpoint_set_raw_io(libusb_device_handle *dev, uint8_t ep, int enable)
+{
+    (void)dev; (void)ep;
+    CHECK(mock.count == 0);
+    if (enable && raw_error) return raw_error;
+    CHECK(raw_io != (enable != 0));
+    raw_io = enable != 0;
+    return 0;
+}
+#endif
 
 #ifdef TEST_WRAP_ALLOCATIONS
 /* GNU ld wrappers inject each reader allocation failure without adding hooks
@@ -62,6 +78,9 @@ void LIBUSB_CALL libusb_free_transfer(struct libusb_transfer *transfer)
 /* Inject either a partial-start failure or a failure during callback resubmission. */
 int LIBUSB_CALL libusb_submit_transfer(struct libusb_transfer *transfer)
 {
+#ifdef _WIN32
+    CHECK(raw_io);
+#endif
     pthread_mutex_lock(&mock.mutex);
     if (++mock.submitted == mock.fail_submit) {
         pthread_mutex_unlock(&mock.mutex);
@@ -107,9 +126,9 @@ int LIBUSB_CALL libusb_handle_events_timeout_completed(libusb_context *context,
         memmove(&mock.pending[i], &mock.pending[i + 1], (mock.count - i - 1) * sizeof(request));
         --mock.count;
         transfer->status = request.cancelled ? LIBUSB_TRANSFER_CANCELLED : mock.status;
-        transfer->actual_length = request.cancelled ? 0 : 16;
+        transfer->actual_length = request.cancelled ? 0 : (int)mock.length;
         if (!request.cancelled)
-            memset(transfer->buffer, (int)++mock.completions, 16);
+            memset(transfer->buffer, (int)++mock.completions, mock.length);
         break;
     }
     pthread_mutex_unlock(&mock.mutex);
@@ -123,11 +142,17 @@ int LIBUSB_CALL libusb_handle_events_timeout_completed(libusb_context *context,
 /* Reset only after all previous transfers have completed and been freed. */
 static void reset_mock(unsigned limit, unsigned fail_submit)
 {
+#ifdef _WIN32
+    CHECK(!raw_io);
+    raw_support = 1;
+    raw_error = 0;
+#endif
     CHECK(mock.count == 0 && mock.allocated == mock.freed);
     mock.allocated = mock.freed = mock.submitted = mock.completions = 0;
     mock.allocations = mock.fail_allocation = 0;
     mock.status = LIBUSB_TRANSFER_COMPLETED;
     mock.limit = limit;
+    mock.length = 16;
     mock.fail_submit = fail_submit;
 }
 
@@ -141,7 +166,7 @@ int main(void)
     uint8_t bytes[BS_USB_BYTES];
     size_t length;
 #ifdef TEST_WRAP_ALLOCATIONS
-    for (unsigned i = 1; i <= 12; ++i) {
+    for (unsigned i = 1; i <= 9; ++i) {
         reset_mock(0, 0);
         allocation_call = 0;
         allocation_failure = i;
@@ -156,6 +181,18 @@ int main(void)
         CHECK(bs_reader_create(&dev, 4, &reader) == BIRRIASDR_ERROR_NO_MEMORY);
         CHECK(reader == NULL && mock.allocated == mock.freed);
     }
+#ifdef _WIN32
+    reset_mock(0, 0);
+    raw_support = 0;
+    CHECK(bs_reader_create(&dev, 4, &reader) == 0);
+    CHECK(bs_reader_start(reader) == BIRRIASDR_ERROR_UNSUPPORTED);
+    bs_reader_destroy(reader);
+    reset_mock(0, 0);
+    raw_error = LIBUSB_ERROR_IO;
+    CHECK(bs_reader_create(&dev, 4, &reader) == 0);
+    CHECK(bs_reader_start(reader) == BIRRIASDR_ERROR_IO);
+    bs_reader_destroy(reader);
+#endif
     reset_mock(8, 0);
     CHECK(bs_reader_create(&dev, 4, &reader) == 0);
     CHECK(bs_reader_start(reader) == 0);
@@ -164,6 +201,19 @@ int main(void)
         CHECK(length == 16 && bytes[0] == i && bytes[15] == i);
     }
     CHECK(bs_reader_take(reader, bytes, &length, 5) == BIRRIASDR_ERROR_TIMEOUT);
+    bs_reader_destroy(reader);
+    /* Recycle whole buffers repeatedly. A queued completion may not alias a
+     * resubmitted transfer, even while the consumer copies outside the lock. */
+    reset_mock(0,0);
+    dev.rate=80000000;
+    mock.length=BS_USB_BYTES;
+    CHECK(bs_reader_create(&dev,4,&reader)==0);
+    CHECK(bs_reader_start(reader)==0);
+    for (unsigned i=1;i<=300;++i) {
+        pthread_mutex_lock(&mock.mutex);mock.limit=i;pthread_mutex_unlock(&mock.mutex);
+        CHECK(bs_reader_take(reader,bytes,&length,1000)==0 && length==BS_USB_BYTES);
+        for (unsigned j=0;j<length;++j) CHECK(bytes[j]==(uint8_t)i);
+    }
     bs_reader_destroy(reader);
     for (unsigned i = 1; i <= 4; ++i) {
         reset_mock(0, i);

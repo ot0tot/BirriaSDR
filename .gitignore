@@ -16,6 +16,8 @@ compile_commands.json
 __pycache__/
 *.py[cod]
 .venv/
+integrations/sdrsharp/**/bin/
+integrations/sdrsharp/**/obj/
 
 # Editors and OS files
 .claude/

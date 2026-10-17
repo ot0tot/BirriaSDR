@@ -164,10 +164,79 @@ static int retune_selected(birriasdr_dev_t *dev, uint64_t frequency_hz, unsigned
  * lock: the full status fields and absolute RF accuracy remain uncharacterized.
  * Startup and live control both use this path, without changing gain or clocks.
  */
+static int band_field(birriasdr_dev_t *dev,unsigned field,uint32_t value)
+{
+    unsigned port=field/2;
+    uint32_t address=field%2 ? 0xc00 : 0x160;
+    uint32_t mask=field%2 ? 0x3c : 0x20000000,actual;
+    BS_TRY(mt_rf_update(dev,port,address,mask,value&mask));
+    BS_TRY(mt_rf_read(dev,port,address,&actual));
+    return ((actual^value)&mask) ? BIRRIASDR_ERROR_STATE : 0;
+}
+
+int mt_restore_band(birriasdr_dev_t *dev)
+{
+    int first=0;
+    if (!dev->mt7921.band_saved) return 0;
+    for (unsigned i=0;i<4;++i) {
+        int result=band_field(dev,i,dev->mt7921.band_baseline[i]);
+        if (result<0 && !first) first=result;
+    }
+    if (!first) dev->mt7921.band_saved=false;
+    return first;
+}
+
+static int select_band(birriasdr_dev_t *dev,bool high)
+{
+    if (!dev->mt7921.band_saved) {
+        uint32_t saved[4];
+        for (unsigned i=0;i<4;++i)
+            BS_TRY(mt_rf_read(dev,i/2,i%2 ? 0xc00 : 0x160,&saved[i]));
+        for (unsigned i=0;i<4;++i) dev->mt7921.band_baseline[i]=saved[i];
+        dev->mt7921.band_saved=true;
+    }
+    for (unsigned i=0;i<4;++i)
+        BS_TRY(band_field(dev,i,i%2 ? (high ? 0x38 : 0x28) : (high ? 0x20000000 : 0)));
+    return 0;
+}
+
+/* Direct high-band mapping uses the observed 50 MHz reference coordinate.
+ * No frequency multiplier is applied to samples. This partial RF profile is
+ * experimental and uncalibrated, including its front-end response. */
+static int retune_high(birriasdr_dev_t *dev,uint64_t hz)
+{
+    uint64_t divider=(hz*(UINT64_C(1)<<20)+25000000)/50000000;
+    uint32_t word=0x80000000u|(uint32_t)divider,routing,actual;
+    static const unsigned boundaries[]={4996,5196,5396,5596,5796,5996,6196,6396,6596,6796,6996,7126};
+    unsigned code=0x14;
+    for (unsigned i=0;i<12;++i) if (hz/1000000<boundaries[i]) {code=0x18+i;break;}
+    BS_TRY(mt_rf_read(dev,MT_SYNTH_PORT,0x240,&routing));
+    int result=mt_rf_update(dev,MT_SYNTH_PORT,0x240,0,0xf0000000);
+    if (!result) result=mt_rf_update(dev,MT_SYNTH_PORT,0x204,0xc00000,0xc00000);
+    if (!result) result=mt_rf_update(dev,MT_SYNTH_PORT,0x21c,0x60000,0x60000);
+    if (!result) result=mt_rf_write(dev,MT_SYNTH_PORT,0xcf8,0x90);
+    if (!result) result=mt_rf_write(dev,MT_SYNTH_PORT,0xca8,word);
+    if (!result) result=mt_rf_write(dev,MT_SYNTH_PORT,0xcac,(uint32_t)(hz*24/5000000)-2);
+    if (!result) result=mt_rf_update(dev,MT_SYNTH_PORT,0xcb8,0xffff0,code*0x1010);
+    if (!result) result=run_calibration(dev,MT_SYNTH_PORT);
+    int clean=finish_calibration(dev,MT_SYNTH_PORT);
+    int restore=mt_rf_update(dev,MT_SYNTH_PORT,0x240,0xf0000000,routing&0xf0000000);
+    if (result<0 || clean<0 || restore<0) return result<0 ? result : clean<0 ? clean : restore;
+    BS_TRY(mt_rf_read(dev,MT_SYNTH_PORT,0xca8,&actual));
+    return actual==(word&0x7fffffff) ? 0 : BIRRIASDR_ERROR_STATE;
+}
+
 int mt_set_frequency(birriasdr_dev_t *dev, uint64_t frequency_hz)
 {
     uint32_t diagnostic;
-    if (frequency_hz < MT_RF_MIN_HZ || frequency_hz > MT_RF_MAX_HZ)
+    if (dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_TUNING) {
+        BS_TRY(dev->backend->validate(frequency_hz,dev->rate,&dev->gain));
+        bool high=frequency_hz>=UINT64_C(4000000000);
+        BS_TRY(select_band(dev,high));
+        return high ? retune_high(dev,frequency_hz) : retune_selected(dev,frequency_hz,MT_RF_FRACTION_BITS);
+    }
+    if (!(dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_TUNING) &&
+        (frequency_hz < MT_RF_MIN_HZ || frequency_hz > MT_RF_MAX_HZ))
         return BIRRIASDR_ERROR_UNSUPPORTED;
     BS_TRY(retune_selected(dev, frequency_hz, MT_RF_FRACTION_BITS));
     BS_TRY(mt_rf_read(dev, MT_SYNTH_PORT, 0xd74, &diagnostic));
@@ -183,8 +252,11 @@ int mt_set_frequency(birriasdr_dev_t *dev, uint64_t frequency_hz)
 int mt_change_frequency(birriasdr_dev_t *dev, uint64_t frequency_hz)
 {
     int result;
-    if (frequency_hz < MT_RF_MIN_HZ || frequency_hz > MT_RF_MAX_HZ)
+    if (!(dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_TUNING) &&
+        (frequency_hz < MT_RF_MIN_HZ || frequency_hz > MT_RF_MAX_HZ))
         return BIRRIASDR_ERROR_UNSUPPORTED;
+    if (dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_TUNING)
+        BS_TRY(dev->backend->validate(frequency_hz,dev->rate,&dev->gain));
     result = mt_set_frequency(dev, frequency_hz);
     if (result < 0 && mt_set_frequency(dev, dev->frequency) < 0)
         return BIRRIASDR_ERROR_STATE;

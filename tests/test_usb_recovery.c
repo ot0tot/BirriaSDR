@@ -20,7 +20,7 @@ static struct {
     int reset_error;
     struct response replies[8];
 } model;
-const struct bs_backend bs_mt7921_backend = {0}, bs_mt7925_backend = {0};
+const struct bs_backend bs_mt7921_backend = {0}, bs_mt7925_backend = {0}, bs_mt7961_wide_backend = {0};
 
 /* No actual port reset occurs; report each platform outcome explicitly. */
 int LIBUSB_CALL libusb_reset_device(libusb_device_handle *handle)

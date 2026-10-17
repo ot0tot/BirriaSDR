@@ -53,6 +53,7 @@ int mt_tune_2g(birriasdr_dev_t *dev, unsigned port, bool secondary,
 int mt_retune_2g_probe(birriasdr_dev_t *dev, uint64_t frequency_hz, unsigned fraction_bits);
 int mt_set_frequency(birriasdr_dev_t *dev, uint64_t frequency_hz);
 int mt_change_frequency(birriasdr_dev_t *dev, uint64_t frequency_hz);
+int mt_restore_band(birriasdr_dev_t *dev);
 
 int mt_rf_read(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t *value);
 int mt_rf_write(birriasdr_dev_t *dev, unsigned port, uint32_t address, uint32_t value);
@@ -65,6 +66,8 @@ int mt_apply_gain(birriasdr_dev_t *dev);
 int mt_change_gain(birriasdr_dev_t *dev, bool manual, const struct birriasdr_gain *gain);
 int mt_restore_gain(birriasdr_dev_t *dev);
 int mt_configure_capture(birriasdr_dev_t *dev);
+int mt_configure_rate(birriasdr_dev_t *dev);
+int mt_restore_rate(birriasdr_dev_t *dev);
 int mt_reset(birriasdr_dev_t *dev);
 int mt_prepare(birriasdr_dev_t *dev, uint32_t packets);
 int mt_start(birriasdr_dev_t *dev);

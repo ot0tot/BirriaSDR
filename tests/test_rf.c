@@ -345,6 +345,81 @@ static void test_fine_tuning(void)
     CHECK(pthread_mutex_destroy(&dev.control_mutex) == 0);
 }
 
+/* New high/low controls own and restore only their band fields. Inject a
+ * calibration failure across bands and a partial restoration failure. */
+static void test_experimental_bands(void)
+{
+    struct model model;
+    birriasdr_dev_t dev;
+    initialize(&model,&dev);
+    dev.backend=&bs_mt7961_wide_backend;
+    dev.open_flags=BIRRIASDR_OPEN_EXPERIMENTAL_TUNING;
+    put(&model,16,0x160,0x80001234);put(&model,17,0x160,0x40005678);
+    put(&model,16,0xc00,0xa5a50028);put(&model,17,0xc00,0x5a5a0028);
+    CHECK(mt_set_frequency(&dev,UINT64_C(5200000000))==0);
+    CHECK(get(&model,16,0xca8)==0x06800000);
+    CHECK(get(&model,16,0xcac)==0x617e);
+    CHECK((get(&model,16,0xcb8)&0xffff0)==0x1a1a0);
+    CHECK(get(&model,16,0x160)==0xa0001234);
+    CHECK(get(&model,17,0x160)==0x60005678);
+    CHECK(get(&model,16,0xc00)==0xa5a50038);
+    dev.frequency=UINT64_C(5200000000);
+    size_t before=model.written;
+    CHECK(mt_change_frequency(&dev,UINT64_C(3500000000))==BIRRIASDR_ERROR_UNSUPPORTED);
+    CHECK(model.written==before);
+    model.fail_address=0xce0;
+    CHECK(mt_change_frequency(&dev,MT_RF_ANCHOR_HZ)==BIRRIASDR_ERROR_IO);
+    CHECK(get(&model,16,0xca8)==0x06800000);
+    CHECK(get(&model,16,0xc00)==0xa5a50038);
+    CHECK((get(&model,16,0xcc4)&0x60000000)==0);
+    CHECK(get(&model,16,0xce0)==0);
+    CHECK(mt_set_frequency(&dev,UINT64_C(2610000000))==0);
+    CHECK((get(&model,16,0x160)&0x20000000)==0);
+    CHECK(get(&model,16,0xc00)==0xa5a50028);
+    model.fail_address=0xc00;
+    CHECK(mt_restore_band(&dev)==BIRRIASDR_ERROR_IO && dev.mt7921.band_saved);
+    CHECK(mt_restore_band(&dev)==0 && !dev.mt7921.band_saved);
+    CHECK(get(&model,16,0x160)==0x80001234 && get(&model,17,0x160)==0x40005678);
+    CHECK(get(&model,16,0xc00)==0xa5a50028 && get(&model,17,0xc00)==0x5a5a0028);
+    struct birriasdr_tuning_range windows[2];
+    CHECK(birriasdr_get_tuning_ranges(&dev,NULL,0)==2);
+    CHECK(birriasdr_get_tuning_ranges(&dev,windows,1)==BIRRIASDR_ERROR_INVALID);
+    CHECK(birriasdr_get_tuning_ranges(&dev,windows,2)==2);
+    CHECK(windows[0].maximum_hz==UINT64_C(3100000000));
+    CHECK(windows[1].minimum_hz==UINT64_C(4000000000));
+    initialize(&model,&dev);
+    dev.backend=&bs_mt7961_wide_backend;
+    dev.open_flags=BIRRIASDR_OPEN_EXPERIMENTAL_TUNING;
+    dev.frequency=UINT64_C(5200000000);
+    CHECK(mt_configure_rf(&dev)==0);
+    CHECK(get(&model,16,0xca8)==0x06800000);
+    CHECK(mt_restore_band(&dev)==0);
+}
+
+static void test_capture_rate(void)
+{
+    struct model model;
+    birriasdr_dev_t dev;
+    initialize(&model,&dev);
+    dev.rate=80000000;
+    CHECK(mt_configure_rate(&dev)==BIRRIASDR_ERROR_UNSUPPORTED);
+    dev.open_flags=BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS;
+    put(&model,0,0x81026004,0xa5a51234);put(&model,0,0x830ad448,0x55cc0400);
+    CHECK(mt_configure_rate(&dev)==0 && dev.mt7921.rate_saved);
+    CHECK(get(&model,0,0x81026004)==((0xa5a51234&~0xfcu)|0x28));
+    CHECK(get(&model,0,0x830ad448)==((0x55cc0400&~0x028c0000u)|0x00880000));
+    CHECK(mt_configure_rate(&dev)==BIRRIASDR_ERROR_STATE);
+    CHECK(mt_restore_rate(&dev)==0 && !dev.mt7921.rate_saved);
+    CHECK(get(&model,0,0x81026004)==0xa5a51234 && get(&model,0,0x830ad448)==0x55cc0400);
+    model.fail_address=0x830ad448;
+    CHECK(mt_configure_rate(&dev)==BIRRIASDR_ERROR_IO);
+    CHECK(!dev.mt7921.rate_saved && get(&model,0,0x81026004)==0xa5a51234);
+    CHECK(mt_configure_rate(&dev)==0);
+    model.fail_address=0x830ad448;
+    CHECK(mt_restore_rate(&dev)==BIRRIASDR_ERROR_IO && dev.mt7921.rate_saved);
+    CHECK(mt_restore_rate(&dev)==0 && !dev.mt7921.rate_saved);
+}
+
 /* Entire RF regression suite is read/write-model based and never opens USB. */
 int main(int argc, char **argv)
 {
@@ -355,5 +430,7 @@ int main(int argc, char **argv)
     test_retune();
     test_public_tuning();
     test_fine_tuning();
+    test_experimental_bands();
+    test_capture_rate();
     return 0;
 }

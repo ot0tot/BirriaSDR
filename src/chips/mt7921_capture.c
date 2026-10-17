@@ -106,6 +106,8 @@ int mt_status(birriasdr_dev_t *dev, uint32_t words[16])
     for (unsigned i = 0; i < 16; ++i)
         if (i != 7)
             BS_TRY(bs_read32(dev, BS_MMIO, MT_MAILBOX + i * 4, &words[i]));
+    for (unsigned i = 0; i < 8; ++i)
+        if (bs_read32(dev, BS_MMIO, MT_MAILBOX + (i+16)*4, &dev->capture_diagnostics[i]) < 0) break;
     return 0;
 }
 
@@ -116,7 +118,7 @@ static int validate(uint64_t frequency, uint32_t rate, const struct birriasdr_ga
 {
     if (gain->lna > 3 || gain->lpf > 8 || gain->digital > 12)
         return BIRRIASDR_ERROR_INVALID;
-    if (frequency < MT_RF_MIN_HZ || frequency > MT_RF_MAX_HZ || rate != 40000000)
+    if (frequency < MT_RF_MIN_HZ || frequency > MT_RF_MAX_HZ || (rate != 40000000 && rate != 80000000))
         return BIRRIASDR_ERROR_UNSUPPORTED;
     return 0;
 }
@@ -145,3 +147,63 @@ const struct bs_backend bs_mt7921_backend = {
     .status = mt_status, .reset = mt_reset, .change_gain = mt_change_gain,
     .change_frequency = mt_change_frequency
 };
+
+/* Deliberately separate from the qualified board profile. Completion/readback
+ * are checked, but the 0xd74 rail is retained as evidence, not a lock veto:
+ * external tones were received beyond that diagnostic's apparent limits. */
+static int validate_wide(uint64_t hz,uint32_t rate,const struct birriasdr_gain *gain)
+{
+    if (gain->lna>3 || gain->lpf>8 || gain->digital>12) return BIRRIASDR_ERROR_INVALID;
+    if ((rate!=40000000 && rate!=80000000) || !((hz>=UINT64_C(1800000000) && hz<=UINT64_C(3100000000)) ||
+        (hz>=UINT64_C(4000000000) && hz<=UINT64_C(8000000000)))) return BIRRIASDR_ERROR_UNSUPPORTED;
+    return 0;
+}
+const struct bs_backend bs_mt7961_wide_backend = {
+    .chipset=BIRRIASDR_CHIP_MT7921,.name="MT7961 experimental low/high tuning",
+    .capabilities=BIRRIASDR_CAP_RX|BIRRIASDR_CAP_RAW_GAIN|BIRRIASDR_CAP_LIVE_GAIN|
+        BIRRIASDR_CAP_TUNING|BIRRIASDR_CAP_LIVE_TUNING,
+    .default_frequency=MT_RF_ANCHOR_HZ,
+    .min_frequency=UINT64_C(1800000000),.max_frequency=UINT64_C(8000000000),
+    .default_rate=40000000,.validate=validate_wide,.identify=identify,
+    .prepare=mt_prepare,.start=mt_start,.stop=mt_stop,.status=mt_status,.reset=mt_reset,
+    .change_gain=mt_change_gain,.change_frequency=mt_change_frequency
+};
+
+/* Apply the externally checked 80 MSps tap clock after the RF/filter bootstrap.
+ * Filtering is selected separately. Both volatile fields restore on reset. */
+static const uint32_t rate_address[2]={0x81026004,0x830ad448};
+static const uint32_t rate_mask[2]={0xfc,0x028c0000};
+static int rate_write(birriasdr_dev_t *dev,unsigned field,uint32_t value)
+{
+    uint32_t actual;
+    BS_TRY(bs_update32(dev,BS_MMIO,rate_address[field],rate_mask[field],value&rate_mask[field]));
+    BS_TRY(bs_read32(dev,BS_MMIO,rate_address[field],&actual));
+    return ((actual^value)&rate_mask[field]) ? BIRRIASDR_ERROR_STATE : 0;
+}
+int mt_restore_rate(birriasdr_dev_t *dev)
+{
+    int first=0;
+    if (!dev->mt7921.rate_saved) return 0;
+    for (unsigned i=2;i;--i) {
+        int result=rate_write(dev,i-1,dev->mt7921.rate_baseline[i-1]);
+        if (result<0 && !first) first=result;
+    }
+    if (!first) dev->mt7921.rate_saved=false;
+    return first;
+}
+int mt_configure_rate(birriasdr_dev_t *dev)
+{
+    if (dev->rate==40000000) return 0;
+    if (dev->rate!=80000000 || !(dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS))
+        return BIRRIASDR_ERROR_UNSUPPORTED;
+    if (dev->mt7921.rate_saved) return BIRRIASDR_ERROR_STATE;
+    for (unsigned i=0;i<2;++i)
+        BS_TRY(bs_read32(dev,BS_MMIO,rate_address[i],&dev->mt7921.rate_baseline[i]));
+    dev->mt7921.rate_saved=true;
+    for (unsigned i=0;i<2;++i) {
+        int result=rate_write(dev,i,i ? 0x00880000 : 0x28);
+        if (result<0) return mt_restore_rate(dev)<0 ? BIRRIASDR_ERROR_STATE : result;
+    }
+    bs_sleep_us(20000);
+    return 0;
+}

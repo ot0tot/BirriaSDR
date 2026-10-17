@@ -46,9 +46,7 @@
  */
 #include "mt7921.h"
 #include "mt7921_image.h"
-#include <fcntl.h>
 #include <string.h>
-#include <unistd.h>
 
 /* Disable special endpoint-reset preservation so WFSYS reset restores the ROM
  * transport consistently. This register uses the USB host-wrapper request pair.
@@ -84,9 +82,13 @@ int mt_reset(birriasdr_dev_t *dev)
 {
     int restore = mt_restore_gain(dev);
     int filter = mt_restore_filter(dev);
+    int band = mt_restore_band(dev);
+    int rate = mt_restore_rate(dev);
     int reset = reset_hardware(dev);
     if (restore < 0) return restore;
-    return filter < 0 ? filter : reset;
+    if (filter < 0) return filter;
+    if (band < 0) return band;
+    return rate < 0 ? rate : reset;
 }
 
 /* Prepare host-side WFDMA descriptor prefetch and scheduler quotas. "TX" here
@@ -195,16 +197,7 @@ static int require_unpatched_rom(birriasdr_dev_t *dev)
  */
 static int initialize_mailbox(birriasdr_dev_t *dev, uint32_t packets)
 {
-    uint8_t nonce[4];
-    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-    ssize_t count;
-    if (fd < 0)
-        return BIRRIASDR_ERROR_IO;
-    count = read(fd, nonce, sizeof(nonce));
-    close(fd);
-    if (count != sizeof(nonce))
-        return BIRRIASDR_ERROR_IO;
-    dev->nonce = bs_get_le32(nonce);
+    BS_TRY(bs_random32(&dev->nonce));
     for (unsigned i = 0; i < 16; ++i) {
         uint32_t expected = i == 1 ? dev->nonce : i == 8 ? packets : 0;
         uint32_t actual;
@@ -283,10 +276,14 @@ static int prepare_once(birriasdr_dev_t *dev, uint32_t packets)
     BS_TRY(mt_configure_rf(dev));
     dev->stats.stage = BIRRIASDR_STAGE_GAIN;
     BS_TRY(mt_apply_gain(dev));
-    BS_TRY(bs_update32(dev, BS_MMIO, 0x74000018, 0xffff, (1u << 21) | (32u << 8) | 100));
+    /* Twenty-nine 8240-byte events fit a 256 KiB host read. The higher-rate profile
+     * groups more events per completion to reduce host request turnover. */
+    unsigned aggregate=dev->rate==80000000 ? 232 : 32;
+    BS_TRY(bs_update32(dev, BS_MMIO, 0x74000018, 0xffff, (1u << 21) | (aggregate << 8) | 100));
     BS_TRY(bs_update32(dev, BS_MMIO, 0x7400000c, 0xff, 30));
     dev->stats.stage = BIRRIASDR_STAGE_RF;
-    return mt_configure_filter(dev);
+    BS_TRY(mt_configure_filter(dev));
+    return mt_configure_rate(dev);
 }
 
 /* Retry a transient startup failure once, from a complete USB/WFSYS reset.

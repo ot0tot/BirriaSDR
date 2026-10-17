@@ -62,18 +62,29 @@ int birriasdr_get_device_info(uint32_t index, struct birriasdr_device_info *info
  */
 int birriasdr_open(birriasdr_dev_t **out, uint32_t index)
 {
+    return birriasdr_open_ex(out, index, 0);
+}
+
+/* An explicit per-handle opt-in keeps ordinary discovery/open conservative. */
+int birriasdr_open_ex(birriasdr_dev_t **out, uint32_t index, uint32_t flags)
+{
     birriasdr_dev_t *dev;
     int result;
     if (!out)
         return BIRRIASDR_ERROR_INVALID;
     *out = NULL;
+    if (flags & ~(BIRRIASDR_OPEN_EXPERIMENTAL_MT7961 | BIRRIASDR_OPEN_EXPERIMENTAL_TUNING | BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS))
+        return BIRRIASDR_ERROR_INVALID;
     dev = calloc(1, sizeof(*dev));
     if (!dev)
         return BIRRIASDR_ERROR_NO_MEMORY;
     dev->lock_fd = -1;
+    dev->open_flags = flags;
     dev->interface_number = -1;
     atomic_init(&dev->run_state, BS_IDLE);
     atomic_init(&dev->frequency, 0);
+    atomic_init(&dev->rate, 0);
+    atomic_init(&dev->bandwidth, 40000000);
     if (pthread_mutex_init(&dev->control_mutex, NULL)) {
         free(dev);
         return BIRRIASDR_ERROR_NO_MEMORY;
@@ -108,7 +119,11 @@ int birriasdr_close(birriasdr_dev_t *dev)
 /* Capabilities describe implemented operations, never silicon marketing limits. */
 uint32_t birriasdr_get_capabilities(const birriasdr_dev_t *dev)
 {
-    return dev ? dev->backend->capabilities : 0;
+    if(!dev) return 0;
+    uint32_t capabilities=dev->backend->capabilities;
+    if(dev->backend->chipset==BIRRIASDR_CHIP_MT7921 &&
+       (dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS)) capabilities|=BIRRIASDR_CAP_FILTER;
+    return capabilities;
 }
 
 /* With the control mutex held, turn a failed hardware update into an orderly
@@ -134,6 +149,19 @@ int birriasdr_get_tuning_range(const birriasdr_dev_t *dev, uint64_t *minimum, ui
     *minimum = dev->backend->min_frequency;
     *maximum = dev->backend->max_frequency;
     return *minimum && *maximum >= *minimum ? 0 : BIRRIASDR_ERROR_UNSUPPORTED;
+}
+
+int birriasdr_get_tuning_ranges(const birriasdr_dev_t *dev,
+    struct birriasdr_tuning_range *ranges, uint32_t capacity)
+{
+    uint64_t minimum, maximum;
+    BS_TRY(birriasdr_get_tuning_range(dev,&minimum,&maximum));
+    unsigned count=(dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_TUNING) ? 2u : 1u;
+    if (!ranges) return capacity ? BIRRIASDR_ERROR_INVALID : (int)count;
+    if (capacity<count) return BIRRIASDR_ERROR_INVALID;
+    ranges[0]=(struct birriasdr_tuning_range){minimum,count==2 ? UINT64_C(3100000000) : maximum};
+    if (count==2) ranges[1]=(struct birriasdr_tuning_range){UINT64_C(4000000000),maximum};
+    return (int)count;
 }
 
 /* Stage a center while idle, or synchronously retune under the same mutex as
@@ -181,15 +209,22 @@ uint64_t birriasdr_get_center_freq(const birriasdr_dev_t *dev)
     return dev ? atomic_load(&dev->frequency) : 0;
 }
 
-/* Capture-clock programming for higher rates is deliberately not inferred from
- * the earlier vendor-firmware experiments. No host decimator is hidden here.
- */
+/* Stage the rate before acquisition. The backend applies the capture clock
+ * after bootstrap, with explicit opt-in for the tested higher-rate profile. */
 int birriasdr_set_sample_rate(birriasdr_dev_t *dev, uint32_t rate)
 {
-    BS_TRY(require_idle(dev));
-    BS_TRY(dev->backend->validate(dev->frequency, rate, &dev->gain));
-    dev->rate = rate;
-    return 0;
+    int result;
+    if (!dev) return BIRRIASDR_ERROR_INVALID;
+    pthread_mutex_lock(&dev->control_mutex);
+    result=require_idle(dev);
+    if (!result && rate==40000000 && dev->bandwidth==80000000)
+        result=BIRRIASDR_ERROR_UNSUPPORTED;
+    if (!result && rate==80000000 && !(dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS))
+        result=BIRRIASDR_ERROR_UNSUPPORTED;
+    if (!result) result=dev->backend->validate(dev->frequency,rate,&dev->gain);
+    if (!result) dev->rate=rate;
+    pthread_mutex_unlock(&dev->control_mutex);
+    return result;
 }
 
 /* The nominal complex rate is configuration metadata, not measured timing. */
@@ -307,13 +342,25 @@ int birriasdr_set_agc_mode(birriasdr_dev_t *dev, int enabled)
     return unsupported_control(dev);
 }
 
-/* TODO: independently selectable filter widths and calibrated RF response.
- * The current backend applies its fixed matched profile during preparation.
- */
+/* Stage a nominal profile before acquisition. The wider profile is limited
+ * to the board/rate opt-in and is never silently selected by a rate change. */
 int birriasdr_set_tuner_bandwidth(birriasdr_dev_t *dev, uint32_t bandwidth)
 {
-    (void)bandwidth;
-    return unsupported_control(dev);
+    if (!dev) return BIRRIASDR_ERROR_INVALID;
+    pthread_mutex_lock(&dev->control_mutex);
+    int result=require_idle(dev);
+    if (!result && (dev->backend->chipset!=BIRRIASDR_CHIP_MT7921 ||
+        (bandwidth!=40000000 && bandwidth!=80000000))) result=BIRRIASDR_ERROR_UNSUPPORTED;
+    if (!result && bandwidth==80000000 && (dev->rate!=80000000 ||
+        !(dev->open_flags&BIRRIASDR_OPEN_EXPERIMENTAL_80MSPS))) result=BIRRIASDR_ERROR_UNSUPPORTED;
+    if (!result) dev->bandwidth=bandwidth;
+    pthread_mutex_unlock(&dev->control_mutex);
+    return result;
+}
+
+uint32_t birriasdr_get_tuner_bandwidth(const birriasdr_dev_t *dev)
+{
+    return dev ? (dev->bandwidth ? (uint32_t)dev->bandwidth : 40000000) : 0;
 }
 
 /* TODO: establish crystal/PLL correction without changing sample interpretation. */
@@ -422,7 +469,7 @@ int birriasdr_read_sync(birriasdr_dev_t *dev, int16_t *iq, uint32_t count, uint3
         *n_read = 0;
     if (!dev || !iq || !n_read || !count || count % BS_PACKET_SAMPLES)
         return BIRRIASDR_ERROR_INVALID;
-    result = bs_stream(dev, copy_sync, &buffer, 64, 16384, count / BS_PACKET_SAMPLES);
+    result = bs_stream(dev, copy_sync, &buffer, 0, 16384, count / BS_PACKET_SAMPLES);
     *n_read = buffer.received;
     if (!result && buffer.received != count)
         return BIRRIASDR_ERROR_PROTOCOL;

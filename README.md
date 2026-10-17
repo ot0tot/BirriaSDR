@@ -1,7 +1,20 @@
-# BirriaSDR
+# BirriaSDR MT7961 RX fork
 
 Turn a supported USB Wi-Fi dongle into an experimental SDR receiver with
-**14-bit I/Q at 40 MSps complex**.
+**14-bit I/Q at 40 MSps complex**, with an experimental 80 MSps mode.
+
+This fork adds Windows support for the generic MT7961 USB adapter
+(`0e8d:7961`), wider experimental tuning, an SDR# source and a standalone
+spectrum receiver. Start with the [Windows setup](docs/windows.md) and
+[application guide](docs/applications.md). The upstream project is
+[BirriaSDR](https://github.com/luigifcruz/BirriaSDR). The
+[fork scope](docs/fork-scope.md) explains the differences.
+
+The standalone package runs without SDR# or an installed Python runtime.
+Extract the complete archive and open `BirriaSDR/BirriaSDR.exe`, or
+`standalone/BirriaSDR.exe` in the combined package. Its browser interface
+provides spectrum, waterfall, tuning, gain, snapshots and diagnostics. Audio
+demodulation and analog-video decoding are not included.
 
 BirriaSDR ships as `libbirriasdr`, a C11 library with an API modeled on
 librtlsdr, together with a command-line recorder. It talks to the device from
@@ -12,10 +25,11 @@ anything, try the rough [proof of concept](#proof-of-concept).
 
 > [!IMPORTANT]
 >
-> This is experimental software. The tested board starts from a channel 6
-> initialization profile, and the library can tune anywhere from 2156 to
-> 2610 MHz. Sensitivity across that range, frequency accuracy and gain are not
-> calibrated. Use at your own risk.
+> This is experimental software. The original command interval remains
+> 2156 to 2610 MHz. The generic adapter profile permits wider requests, but
+> its 1800 to 3100 and 4000 to 8000 MHz windows are not guaranteed reception
+> ranges. Gain and sensitivity are uncalibrated. A flat 80 MHz passband has
+> not been established. Read the measured limits before relying on a setting.
 
 https://github.com/user-attachments/assets/64e9fbbd-1f16-4c7b-905c-5624b9c574b7
 
@@ -70,11 +84,11 @@ For more detail, see:
 
 | Parameter | Current value |
 | --- | --- |
-| Hardware | COMFAST dongle `3574:6211` with an MT7961 digital die and an MT7972 analog die |
-| Frequency tuning | 2156 to 2610 MHz, including live changes. Sensitivity across the range is unverified. No 5 GHz support yet |
+| Hardware | Original COMFAST `3574:6211` plus experimental generic USB `0e8d:7961`, with MT7961 digital and MT7972 analog dies |
+| Frequency tuning | Default 2156 to 2610 MHz. Generic adapter exploration windows 1800 to 3100 and 4000 to 8000 MHz. Practical repeated low-band reception near 2143 to 2612 MHz and selected high-band detections from 4900 to 6105 MHz on one board. See [tuning limits and 5/6 LO](docs/tuning-research.md) |
 | Tuning step | Nominally 28.61 Hz, using the full 20-bit fraction. Requests are in whole hertz with no Wi-Fi channel restriction. The physical response to fine steps is still unmeasured |
-| Sample rate | 40 MSps complex, fixed |
-| Sampled bandwidth | 40 MHz span with matching nominal 40 MHz analog and digital settings. See [filter characteristics](docs/mt7921.md#filtering) for rolloff and aliasing limits |
+| Sample rate | Default 40 MSps complex, experimental 80 MSps on the generic adapter. No 160 MSps support |
+| Sampled bandwidth | Nominal 40 MHz filter, optional experimental 80 MHz filter at 80 MSps. Edge loss and aliases remain. See [bandwidth measurements](docs/bandwidth-validation.md) |
 | Sample resolution | Signed 14-bit I and Q, from −8192 to 8191 |
 | Receive channels | One (chain 0) |
 | Transmit | None, receive only |
@@ -83,12 +97,17 @@ For more detail, see:
 | Automatic gain | Manual overrides can be released. Full AGC control is not implemented |
 | Frequency accuracy | Uncalibrated, with no ppm correction |
 | Reference clock | On-board 40 MHz crystal |
-| Host interface | Bulk transfers over USB 3.0 at about 161 MB/s |
+| Host interface | USB 3 bulk transfers at about 161 MB/s or 322 MB/s including event framing |
 | Output format | Interleaved signed 16-bit I and Q (`cs16`). Buffers from the API are native-endian, and recorder files are little-endian |
 | Firmware | Original 1,120-byte RAM program. No vendor firmware and nothing flashed |
-| Host platforms | Linux (tested on Raspberry Pi 5) and macOS (not tested with hardware) |
+| Host platforms | Windows x64 tested with libusbK and libusb 1.0.30. Upstream Linux path retained, macOS hardware untested |
 
 ## Proof of concept
+
+The new [standalone receiver](docs/standalone.md) and
+[SDR# plugin](docs/applications.md) use the native library and are the
+recommended interfaces for the generic adapter. The original flowgraph below
+is retained as upstream background and does not include this fork's controls.
 
 **The [CyberEther](https://cyberether.org/) flowgraph in
 [`cyberether/birriasdr.yml`](cyberether/birriasdr.yml) is a very rough proof of
@@ -107,6 +126,11 @@ flowgraph power-cycles the USB ports by default, which needs root and only works
 when the dongle is the only USB device connected.
 
 ## Build and try
+
+Use the [Windows instructions](docs/windows.md) for the generic adapter,
+including the interface-specific libusbK setup. The commands below describe
+the upstream POSIX build. The wider profiles have been tested on Windows
+only. The upstream COMFAST configuration remains the default.
 
 You need a C compiler, CMake and the libusb development files. On Debian or
 Ubuntu, install them with

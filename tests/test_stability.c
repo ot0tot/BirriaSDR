@@ -22,7 +22,7 @@
  */
 #include "birriasdr.h"
 #include <inttypes.h>
-#include <pthread.h>
+#include "../src/platform.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -36,6 +36,7 @@
 
 struct run {
     birriasdr_dev_t *dev;
+    uint32_t open_flags;
     uint64_t minimum, maximum;
     atomic_uint_fast64_t samples;
     atomic_int callback_error;
@@ -43,6 +44,7 @@ struct run {
     uint64_t cancel_after;
     bool cancel_sent;
     bool soak;
+    bool wifi_only;
     int control_error;
     unsigned changes;
 };
@@ -50,16 +52,24 @@ struct run {
 /* Use elapsed monotonic time, independent of wall-clock synchronization. */
 static uint64_t now_ns(void)
 {
+#ifdef _WIN32
+    return GetTickCount64() * UINT64_C(1000000);
+#else
     struct timespec time;
     clock_gettime(CLOCK_MONOTONIC, &time);
     return (uint64_t)time.tv_sec * UINT64_C(1000000000) + (uint64_t)time.tv_nsec;
+#endif
 }
 
 /* Sleep only in the control thread; the callback never waits or prints. */
 static void pause_ms(unsigned ms)
 {
+#ifdef _WIN32
+    Sleep(ms);
+#else
     struct timespec delay = {ms / 1000, (long)(ms % 1000) * 1000000};
     nanosleep(&delay, NULL);
+#endif
 }
 
 /* Verify callback continuity independently of the device packet counters. */
@@ -143,7 +153,7 @@ static int restart_sweep(struct run *run, int16_t *iq)
             if (trial % 31 == 30) {
                 result = birriasdr_close(run->dev);
                 run->dev = NULL;
-                if (!result) result = birriasdr_open(&run->dev, 0);
+                if (!result) result = birriasdr_open_ex(&run->dev, 0, run->open_flags);
                 printf("{\"event\":\"reopen\",\"trial\":%u,\"result\":%d}\n", trial, result);
                 if (result) return result;
             }
@@ -227,18 +237,20 @@ static int live_controls(struct run *run)
 {
     static const uint64_t fine[] = {2400000000, 2400000029, 2400000057, 2400000086,
                                     2437123456, 2437000000};
-    uint64_t intervals = (run->maximum - run->minimum + STEP_HZ - 1) / STEP_HZ;
+    uint64_t minimum = run->wifi_only ? UINT64_C(2412000000) : run->minimum;
+    uint64_t maximum = run->wifi_only ? UINT64_C(2472000000) : run->maximum;
+    uint64_t intervals = (maximum - minimum + STEP_HZ - 1) / STEP_HZ;
     int result = invalid_controls(run);
     if (result) return result;
     for (unsigned direction = 0; direction < 2; ++direction) {
         for (uint64_t i = 0; i <= intervals; ++i) {
             uint64_t offset = i * STEP_HZ;
-            if (offset > run->maximum - run->minimum) offset = run->maximum - run->minimum;
-            result = live_frequency(run, direction ? run->maximum - offset : run->minimum + offset);
+            if (offset > maximum - minimum) offset = maximum - minimum;
+            result = live_frequency(run, direction ? maximum - offset : minimum + offset);
             if (result) return result;
         }
     }
-    for (size_t i = 0; i < sizeof(fine) / sizeof(fine[0]); ++i) {
+    for (size_t i = run->wifi_only ? 4 : 0; i < sizeof(fine) / sizeof(fine[0]); ++i) {
         result = live_frequency(run, fine[i]);
         if (result) return result;
     }
@@ -312,24 +324,32 @@ static int live_run(struct run *run, bool soak)
 int main(int argc, char **argv)
 {
     struct run run = {0};
+    if (argc > 2 && !strcmp(argv[argc - 1], "--experimental-mt7961")) {
+        run.open_flags = BIRRIASDR_OPEN_EXPERIMENTAL_MT7961;
+        --argc;
+    }
     const char *phase = argc == 3 ? argv[2] : "all";
     int result, closed;
     int16_t *iq;
     if (argc < 2 || argc > 3 || strcmp(argv[1], "--run") ||
-        (strcmp(phase, "all") && strcmp(phase, "restart") && strcmp(phase, "live") && strcmp(phase, "soak"))) {
-        fprintf(stderr, "Usage: %s --run [all|restart|live|soak]\n", argv[0]);
+        (strcmp(phase, "all") && strcmp(phase, "restart") && strcmp(phase, "live") && strcmp(phase, "wifi") && strcmp(phase, "soak"))) {
+        fprintf(stderr, "Usage: %s --run [all|restart|live|wifi|soak] [--experimental-mt7961]\n", argv[0]);
         return 2;
     }
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
     iq = malloc(FINITE_SAMPLES * 4);
     if (!iq) return 1;
-    result = birriasdr_open(&run.dev, 0);
+    result = birriasdr_open_ex(&run.dev, 0, run.open_flags);
     if (!result) result = birriasdr_get_tuning_range(run.dev, &run.minimum, &run.maximum);
     printf("{\"event\":\"begin\",\"phase\":\"%s\",\"minimum_hz\":%" PRIu64
            ",\"maximum_hz\":%" PRIu64 ",\"step_hz\":%" PRIu64 ",\"result\":%d}\n",
            phase, run.minimum, run.maximum, STEP_HZ, result);
     if (!result && (!strcmp(phase, "all") || !strcmp(phase, "restart"))) result = restart_sweep(&run, iq);
     if (!result && (!strcmp(phase, "all") || !strcmp(phase, "live"))) result = live_run(&run, false);
+    if (!result && !strcmp(phase, "wifi")) {
+        run.wifi_only = true;
+        result = live_run(&run, false);
+    }
     if (!result && (!strcmp(phase, "all") || !strcmp(phase, "soak"))) result = live_run(&run, true);
     if (run.dev) {
         uint32_t received = 0;
