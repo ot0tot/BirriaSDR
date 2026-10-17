@@ -3,25 +3,23 @@
 Turn a supported USB Wi-Fi dongle into an experimental SDR receiver with
 **14-bit I/Q at 40 MSps complex**, with an experimental 80 MSps mode.
 
-This fork adds Windows support for the generic MT7961 USB adapter
-(`0e8d:7961`), wider experimental tuning, an SDR# source and a standalone
-spectrum receiver. Start with the [Windows setup](docs/windows.md) and
-[application guide](docs/applications.md). The upstream project is
-[BirriaSDR](https://github.com/luigifcruz/BirriaSDR). The
-[fork scope](docs/fork-scope.md) explains the differences.
+This is the [ot0tot/BirriaSDR](https://github.com/ot0tot/BirriaSDR)
+receive fork, on branch `mt7961-wifi-usb`. It adds Windows support for the
+generic MT7961 USB adapter (`0e8d:7961`), wider experimental tuning, an SDR#
+source and a standalone spectrum receiver. The original project is
+[BirriaSDR by luigifcruz](https://github.com/luigifcruz/BirriaSDR).
+The [fork scope](docs/fork-scope.md) explains the differences.
 
-The standalone package runs without SDR# or an installed Python runtime.
-Extract the complete archive and open `BirriaSDR/BirriaSDR.exe`, or
-`standalone/BirriaSDR.exe` in the combined package. Its browser interface
-provides spectrum, waterfall, tuning, gain, snapshots and diagnostics. Audio
-demodulation and analog-video decoding are not included.
+Start with [Build and try](#build-and-try) for the driver, standalone app and
+SDR# installation. You can use your existing compatible SDR# installation.
+The standalone app needs no SDR# installation and provides spectrum,
+waterfall, tuning, gain, snapshots and diagnostics. Audio demodulation and
+analog-video decoding are not included. The repository contains source code,
+so GitHub's source ZIP is not a ready-to-run Windows application.
 
-BirriaSDR ships as `libbirriasdr`, a C11 library with an API modeled on
-librtlsdr, together with a command-line recorder. It talks to the device from
-userspace through libusb and includes the source of its own small device
-program. Start with [Build and try](#build-and-try), or jump to the [API](#api)
-to add the receiver to an application. To see it working without building
-anything, try the rough [proof of concept](#proof-of-concept).
+The C11 library and recorder remain available for other applications. See
+the [API](#api) for integration and the [application guide](docs/applications.md)
+for optional SoapySDR support.
 
 > [!IMPORTANT]
 >
@@ -63,8 +61,9 @@ volatile and disappears when the dongle loses power. The device program's
 assembly source lives in [`firmware/iq_stream.S`](firmware/iq_stream.S), and the
 library embeds its assembled image.
 
-The tested hardware is the **COMFAST MT7961/MT7921AU dongle (`3574:6211`)**,
-which pairs an MT7961 digital die with an MT7972 analog die. By default the
+The upstream board is the **COMFAST MT7961/MT7921AU dongle (`3574:6211`)**.
+This fork also tests a generic adapter identifying as **`0e8d:7961`** on
+Windows. Both pair an MT7961 digital die with an MT7972 analog die. By default the
 receiver is centered on Wi-Fi channel 6 (nominally 2437 MHz) and uses receive
 chain 0 at 40 million complex samples per second. The library can retune
 anywhere in the 2156 to 2610 MHz range, even while streaming. At 40 MSps it
@@ -127,15 +126,135 @@ when the dongle is the only USB device connected.
 
 ## Build and try
 
-Use the [Windows instructions](docs/windows.md) for the generic adapter,
-including the interface-specific libusbK setup. The commands below describe
-the upstream POSIX build. The wider profiles have been tested on Windows
-only. The upstream COMFAST configuration remains the default.
+### Prepare the Windows adapter
 
-You need a C compiler, CMake and the libusb development files. On Debian or
-Ubuntu, install them with
-`sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev`.
-On macOS with Homebrew, run `brew install cmake pkg-config libusb`.
+Connect the `0e8d:7961` adapter to a USB 3 port and fit its antennas. Close
+other applications using it. A USB 2 connection cannot carry the stream.
+
+Open [Zadig](https://zadig.akeo.ie/), enable **Options > List All Devices**
+and select **WiFi_If (Interface 3)** for `0e8d:7961`. Install **libusbK**
+for that interface only. Keep the composite parent and Bluetooth interfaces
+unchanged. Reconnect the adapter after installation.
+
+The driver change temporarily replaces ordinary Wi-Fi networking on that
+interface. WinUSB does not work for this receiver's required control requests.
+The build scripts supply libusb 1.0.30. Keep that runtime rather than using an
+older DLL from another application. Read the [Windows setup](docs/windows.md)
+for identity checks and recovery details.
+
+### Build and run the standalone app
+
+Install Git, Python 3.12 x64 and Visual Studio 2022 or newer C++ Build Tools
+with CMake. Ensure `git` and `python` are on PATH. Run the following in
+PowerShell:
+
+```powershell
+git clone --branch mt7961-wifi-usb --single-branch https://github.com/ot0tot/BirriaSDR.git
+Set-Location BirriaSDR
+python -m pip install numpy==2.3.5
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/build-windows.ps1
+.\build-windows\Release\birria_rx.exe --list
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/build-standalone.ps1 -SkipNativeBuild
+.\build-applications\standalone\BirriaSDR\BirriaSDR.exe
+```
+
+The native build runs its offline tests. The standalone build installs a
+project-local PyInstaller and creates
+`build-applications/standalone/BirriaSDR-standalone-windows-x64.zip`.
+The process-scoped `-ExecutionPolicy Bypass` option does not change your
+machine's execution policy. Supply `-Python 'C:\path\to\python.exe'` to
+`build-standalone.ps1` if you use a different interpreter location.
+
+The application opens a local browser at `http://127.0.0.1:8073`, or another
+available port. Select the receiver and press **Start receiver**. Begin at
+2437 MHz, 40 MSps and the nominal 40 MHz filter. Enter another center in MHz
+and press Enter, or use a preset. The standalone application restarts capture
+when tuning or changing rate, so it does not relabel queued samples.
+
+Use **Manual gain** for the raw LNA, filter-stage and digital codes. The codes
+are not calibrated dB. Uncheck it to restore the saved unforced gain baseline.
+The experimental 80 MSps rate and nominal 80 MHz filter are separate controls.
+Selecting 80 MSps alone retains the narrower filter. A flat 80 MHz passband
+is not established. Read the [bandwidth limits](docs/bandwidth-validation.md)
+before using the wider profile.
+
+Use **Save I/Q snapshot** to save one contiguous displayed FFT window.
+Use **Save diagnostics** after a capture error. The **Stop receiver** button
+releases the adapter. The **Exit app** button shuts down the application.
+Closing the browser tab alone leaves the server running. Read the
+[standalone guide](docs/standalone.md) for zoom, averaging, DC removal and
+snapshot format.
+
+A packaged application includes Python and NumPy, so another Windows x64
+machine does not need them installed. Extract the entire archive and keep
+`_internal` beside `BirriaSDR.exe`. In a combined receiver package, run
+`standalone/BirriaSDR.exe` instead. The same driver setup still applies.
+You can also run `python integrations/standalone/app.py --demo` from this
+checkout to try synthetic signals without opening the adapter.
+
+### Add the source to your existing SDR# installation
+
+Use the checked **x64 .NET 8 production build 1921**, with
+`SDRSharp.dotnet8.exe` and `SDRSharp.config` in its directory. Install the
+.NET 8 SDK to build the plugin. Next/Beta 1922 and other host versions need
+separate validation. The installer checks the supported executable hash and
+stops before changing files if it does not match.
+
+Close SDR#, then run these commands from the repository root. Replace
+`C:\SDRSharp` with your actual installation directory:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/build-applications.ps1 -SdrSharpDirectory 'C:\SDRSharp'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/install-sdrsharp.ps1 -SdrSharpDirectory 'C:\SDRSharp' -PackageDirectory "$PWD\build-applications\sdrsharp"
+```
+
+Start `SDRSharp.dotnet8.exe` and select **BirriaSDR (MT7961)** in the source
+menu. Choose 40 MSps and the nominal 40 MHz filter before starting. Close the
+standalone receiver before SDR# opens the adapter. You do not need a custom
+SDR# distribution or a `FrontEnds.xml` file.
+
+The installer places the registration plugin under `Plugins/BirriaSDR` by
+default and backs up earlier files. Its private USB runtime coexists with
+SDR#'s existing runtime. Do not overwrite SDR#'s root `libusb-1.0.dll`.
+To remove the source, close SDR# and run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/install-sdrsharp.ps1 -SdrSharpDirectory 'C:\SDRSharp' -Uninstall
+```
+
+A combined binary package also includes `install-sdrsharp.cmd`. From its
+extracted directory, run
+`.\install-sdrsharp.cmd -SdrSharpDirectory 'C:\SDRSharp'` in PowerShell.
+Read the [application guide](docs/applications.md) for package building,
+SoapySDR and supported host details.
+
+### Record raw samples
+
+Use the native recorder for finite or continuous captures. This example
+records eight million complex samples through the same experimental tuning
+path as the applications:
+
+```powershell
+.\build-windows\Release\birria_rx.exe --experimental-mt7961 --experimental-tuning --frequency 5800000000 high.cs16 8000000
+```
+
+The file contains little-endian signed 16-bit I/Q pairs on the 14-bit scale.
+The recorder applies no averaging or decimation and refuses to overwrite an
+existing file. Leave out the sample count to record until Ctrl+C. Check the
+exit status, because an error leaves an incomplete or discontinuous capture.
+The [tuning report](docs/tuning-research.md) separates accepted programming
+windows from measured reception and explains the confirmed 5/6 LO mapping.
+The public applications use the ordinary oscillator mapping.
+
+### Build the original POSIX library
+
+The upstream COMFAST profile remains the default. The added generic-adapter
+profiles have been hardware-tested on Windows. Linux and macOS validation of
+these additions remains open.
+
+Install a C compiler, CMake and libusb development files. On Debian or Ubuntu,
+use `sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev`.
+On macOS with Homebrew, use `brew install cmake pkg-config libusb`.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -145,29 +264,16 @@ ctest --test-dir build --output-on-failure
 ./build/birria_rx capture.cs16 8000000 manual
 ```
 
-The last command records eight million complex samples from device 0 with fixed
-manual gain codes (LNA 2, filter stage 8, digital 0). Leave out `manual` to
-release the gain overrides, and leave out the sample count to record until you
-press Ctrl-C. The file holds little-endian signed 16-bit **I, Q** pairs, with
-each component between −8192 and 8191. The recorder applies no averaging or
-decimation, and it refuses to overwrite an existing file. Always check the exit
-status. An error means the capture is incomplete or its continuity could not be
-confirmed, even if the file contains samples.
+The last command uses the upstream board's default 2437 MHz center and manual
+gain codes LNA 2, filter stage 8 and digital 0. Leave out `manual` to release
+the overrides. For the generic adapter, pass `--experimental-mt7961` and add
+`--experimental-tuning` when using the wider windows.
 
-To pick a different center frequency, pass it in hertz:
-
-```sh
-./build/birria_rx --frequency 2437123456 off-channel.cs16 8000000 manual
-```
-
-Before you start, the dongle must have **no vendor ROM patch loaded**, and its
-Wi-Fi interface must be free for libusb to claim. A software reset does not
-clear a patch that is already loaded. On Linux, stop the Wi-Fi driver from
-binding automatically before you reconnect the dongle, and give your user USB
-access (or run the example with `sudo`). On macOS, reconnect the dongle first if
-another driver loaded firmware onto it. The library refuses to run while a
-kernel driver is attached, and it never unloads drivers or power-cycles a USB
-hub.
+The device must have no vendor ROM patch loaded, and its Wi-Fi interface must
+be free for libusb to claim. A software reset does not clear a loaded patch.
+On Linux, prevent the Wi-Fi driver from binding before reconnecting the dongle
+and give your user USB access. The library does not unload kernel drivers or
+power-cycle hubs. Read the [receiver overview](docs/hardware.md) for ownership.
 
 ## API
 
@@ -184,7 +290,8 @@ points are:
 ```c
 birriasdr_get_device_count();
 birriasdr_get_device_info(index, &info);
-birriasdr_open(&dev, index);
+birriasdr_open_ex(&dev, index, BIRRIASDR_OPEN_EXPERIMENTAL_MT7961 |
+                               BIRRIASDR_OPEN_EXPERIMENTAL_TUNING);
 birriasdr_get_tuning_range(dev, &minimum_hz, &maximum_hz);
 birriasdr_set_center_freq(dev, 2437000000ULL);
 birriasdr_set_sample_rate(dev, 40000000);
@@ -196,8 +303,9 @@ birriasdr_close(dev);
 ```
 
 This outline skips error handling, so check every return value as the example
-does. Frequencies are 64-bit values so the API can represent future 5 GHz
-operation. The raw gain codes are separate from the calibrated dB gain API,
+does. This outline selects the generic adapter profile. Use
+`birriasdr_open()` for the original default profile. Frequencies use 64-bit
+values to represent the implemented experimental high-band tuning. The raw gain codes are separate from the calibrated dB gain API,
 which is reserved for later.
 
 The `read_async` function blocks the calling thread while a dedicated
@@ -255,6 +363,10 @@ vendor firmware. Device removal, a retained vendor patch and malformed stream
 data are still reported as errors. If a reset invalidates the handle, close it
 and find the device again.
 
+Some Windows bulk-transport faults still require a physical reconnect. The
+shipped receiver applications report continuity loss and stop. Save diagnostics,
+close the application and reconnect before retrying if a restart fails.
+
 Recovery stays off until you register a callback. Finite reads and the recorder
 example stay strict and stop at the first error. Startup itself retries once
 after a transient preparation failure, before any samples are captured. See the
@@ -262,7 +374,8 @@ after a transient preparation failure, before any samples are captured. See the
 
 ## Run stability tests
 
-The offline tests run with `ctest --test-dir build --output-on-failure`. To
+The Windows build script runs the offline native tests. The POSIX equivalent
+is `ctest --test-dir build --output-on-failure`. To
 exercise a connected dongle, run `./build/test_stability --run`. It checks
 repeated starts and stops, tuning across the supported range, live gain and
 frequency changes, and a five-minute stream. Set up the device as described
@@ -306,9 +419,9 @@ python3 tools/rebuild_firmware.py --check
 
 Remove `--check` to replace the header after changing the assembly. The script
 assembles `firmware/iq_stream.S`, links it at address `0x00915000`, and appends
-the alignment padding and checksum that the boot ROM expects. Python is only
-needed for this optional development step, and no vendor binary or ROM dump is
-used as input.
+the alignment padding and checksum that the boot ROM expects. The native library build does not need Python. The standalone app uses
+Python separately from this optional firmware rebuild. No vendor binary or
+ROM dump is used as firmware input.
 
 ## License
 
