@@ -6,6 +6,9 @@ param(
     [switch]$Uninstall
 )
 $ErrorActionPreference='Stop'
+# A batch launcher can inherit PowerShell 7's module search path. Load the
+# running host's built-in utility module explicitly, including Get-FileHash.
+Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1')
 $repoRoot=Split-Path -Parent $PSScriptRoot
 if (!$PackageDirectory) {
     $PackageDirectory=Join-Path $PSScriptRoot 'sdrsharp'

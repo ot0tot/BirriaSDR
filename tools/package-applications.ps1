@@ -47,7 +47,7 @@ foreach($name in 'COPYING.libusb','LICENSE','NOTICE','BSD-3-Clause-Clear.txt') {
 Copy-Item -LiteralPath "$PSScriptRoot/install-sdrsharp.ps1","$PSScriptRoot/start-soapy-app.ps1" -Destination $package
 Copy-Item -LiteralPath "$repoRoot/docs" -Destination $package -Recurse
 Copy-Item -LiteralPath "$repoRoot/LICENSE","$repoRoot/NOTICE" -Destination $package
-@('@echo off','powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-sdrsharp.ps1" %*','if errorlevel 1 pause') |
+@('@echo off','powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-sdrsharp.ps1" %*','if errorlevel 1 (pause & exit /b 1)') |
     Set-Content -LiteralPath (Join-Path $package 'install-sdrsharp.cmd') -Encoding ascii
 $files=& git -C $repoRoot ls-files
 if ($LASTEXITCODE) { throw 'Could not enumerate the current source tree.' }
